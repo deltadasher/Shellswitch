@@ -65,10 +65,14 @@ pub fn default_roots() -> Vec<PathBuf> {
     ];
     if let Some(dirs) = std::env::var_os("XDG_DATA_DIRS") {
         for p in std::env::split_paths(&dirs) {
+            paths.extend(installed_runtime_roots(&p));
             paths.push(p.join("applications"));
             paths.push(p.join("wayland-sessions"));
             paths.push(p.join("xsessions"));
         }
+    }
+    for root in ["/usr/share", "/usr/local/share", "/opt"] {
+        paths.extend(installed_runtime_roots(Path::new(root)));
     }
     if let Some(dirs) = std::env::var_os("XDG_CONFIG_DIRS") {
         paths.extend(std::env::split_paths(&dirs));
@@ -105,6 +109,16 @@ fn installed_runtime_roots(data_home: &Path) -> Vec<PathBuf> {
                 return None;
             }
             let has_runtime_layout = [
+                "shell.qml",
+                "Shell.qml",
+                "shellswitch.toml",
+                "eww.yuck",
+                "app.ts",
+                "app.tsx",
+                "src/shell.qml",
+                "src/Shell.qml",
+                "src/app.ts",
+                "src/app.tsx",
                 "src/quickshell/shell.qml",
                 "src/quickshell/Shell.qml",
                 "quickshell/shell.qml",
@@ -666,6 +680,21 @@ pub fn scan(roots: &[PathBuf]) -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn installed_roots_refresh_for_new_arbitrary_framework_layouts() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(installed_runtime_roots(t.path()).is_empty());
+        for (name, marker) in [
+            ("unlisted-a", "shell.qml"),
+            ("unlisted-b", "app.tsx"),
+            ("unlisted-c", "eww.yuck"),
+        ] {
+            let root = t.path().join(name);
+            fs::create_dir_all(&root).unwrap();
+            fs::write(root.join(marker), "").unwrap();
+            assert!(installed_runtime_roots(t.path()).contains(&root));
+        }
+    }
     #[test]
     fn arbitrary_quickshell_name_and_symlink_dedup() {
         let t = tempfile::tempdir().unwrap();
