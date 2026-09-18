@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.8
+
+- Prevent timestamped runtime backups from being selected as current shell roots.
+- Reduce the default scan from thousands of irrelevant backup candidates to the current runtime set.
+- Keep failed TUI actions open as an explicit diagnostic instead of silently returning to the browser.
+
 ## 0.2.7
 
 - Prevent bulk user data, rollback copies, and caches from consuming the discovery budget before installed shell runtimes are reached.

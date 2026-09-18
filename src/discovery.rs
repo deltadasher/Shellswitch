@@ -93,7 +93,15 @@ fn installed_runtime_roots(data_home: &Path) -> Vec<PathBuf> {
         .flatten()
         .filter_map(|entry| {
             let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
             if !path.is_dir() {
+                return None;
+            }
+            if name.starts_with('.')
+                && ["previous", "backup", "old", "rollback"]
+                    .iter()
+                    .any(|marker| name.contains(marker))
+            {
                 return None;
             }
             let has_runtime_layout = [

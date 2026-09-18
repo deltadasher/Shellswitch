@@ -332,7 +332,13 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
                 };
                 a.message = match result {
                     Ok(()) => "Action complete. Trial switches require k to keep.".into(),
-                    Err(e) => format!("{e:#}"),
+                    Err(e) => {
+                        let detail = format!(
+                            "Action failed:\n\n{e:#}\n\nPress Esc to close this diagnostic."
+                        );
+                        a.confirm = Some(detail);
+                        "Action failed; diagnostic opened.".into()
+                    }
                 };
                 crate::process::annotate(&mut report.candidates);
             }
