@@ -142,3 +142,38 @@ pub fn generate(kind: &str, root: &Path, fragment: Option<&Path>) -> Result<Stri
         toml::to_string_pretty(&value)?
     ))
 }
+
+/// Restore the runtime paths normally supplied by the upstream launcher,
+/// without invoking its daemon or startup side effects.
+pub fn launch_environment(
+    c: &crate::model::Candidate,
+) -> Result<Vec<(&'static str, std::path::PathBuf)>> {
+    if !c
+        .lifecycle
+        .as_ref()
+        .is_some_and(|l| l.adapter == "serpantinum-bridge-v1")
+    {
+        return Ok(Vec::new());
+    }
+    let crate::model::Backend::Process { argv, .. } = &c.backend else {
+        anyhow::bail!("Serpantinum bridge requires a process backend");
+    };
+    let entry = argv
+        .windows(2)
+        .find(|w| w[0] == "-p")
+        .map(|w| std::path::PathBuf::from(&w[1]))
+        .context("Missing Serpantinum entrypoint")?;
+    let qs = entry.parent().context("Missing Quickshell directory")?;
+    let src = qs
+        .parent()
+        .context("Missing Serpantinum runtime directory")?;
+    ensure!(
+        src.join("scripts/qs_manager.sh").is_file(),
+        "Missing Serpantinum widget dispatcher"
+    );
+    Ok(vec![
+        ("SERPANTINUM_DIR", src.to_owned()),
+        ("QS_DIR", qs.to_owned()),
+        ("MAIN_QML", entry),
+    ])
+}

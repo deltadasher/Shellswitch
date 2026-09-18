@@ -353,6 +353,7 @@ fn prepare_launch(c: &Candidate, store: &Store, s: &mut State, lease: &str) -> R
                 .arg(&ticket)
                 .arg("--")
                 .args(argv)
+                .envs(crate::adapters::launch_environment(c)?)
                 .current_dir(cwd)
                 .env("SHELLSWITCH_STATE_DIR", &store.dir)
                 .env("SHELLSWITCH_SHELL_ID", &c.id)
