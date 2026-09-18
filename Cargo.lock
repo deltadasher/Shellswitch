@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "shellswitch"
-version = "0.2.10"
+version = "0.2.12"
 dependencies = [
  "anyhow",
  "clap",

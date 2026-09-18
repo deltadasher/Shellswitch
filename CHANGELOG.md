@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.12
+
+- Prefer a single installed lifecycle-adapted candidate when discovery and the registry expose the same shell name.
+- Remove false ambiguity for direct `plan` and `switch` commands while retaining full-ID selection for genuinely distinct shells.
+
 ## 0.2.11
 
 - Automatically adopt one unambiguous recognized running shell when Shellswitch starts.

@@ -328,6 +328,11 @@ fn main() -> Result<()> {
     // Installed revisions take precedence over mutable discovery results.
     let installed = lifecycle::registry(&dir)?;
     for c in installed {
+        if c.lifecycle.is_some() {
+            report
+                .candidates
+                .retain(|x| x.name != c.name || x.lifecycle.is_some());
+        }
         report.candidates.retain(|x| x.id != c.id);
         report.candidates.push(c);
     }
@@ -342,6 +347,14 @@ fn main() -> Result<()> {
             .filter(|c| c.id == id || c.name == id)
             .collect();
         if choices.len() > 1 {
+            let managed: Vec<_> = choices
+                .iter()
+                .copied()
+                .filter(|c| c.lifecycle.is_some() || c.declared)
+                .collect();
+            if managed.len() == 1 {
+                return Ok(managed[0]);
+            }
             bail!("Ambiguous name; use the full candidate ID");
         }
         choices
