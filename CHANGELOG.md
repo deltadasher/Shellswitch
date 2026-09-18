@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.10
+
+- Migrate hash-based discovered registry entries to stable manifest IDs when installing a lifecycle adapter.
+- Preserve the selected/active process while replacing its metadata with the installed adapter.
+
 ## 0.2.9
 
 - Refuse switching when Niri configuration ownership has not been enrolled.
