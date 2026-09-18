@@ -1,0 +1,342 @@
+--- a/bin/blackhole
++++ b/bin/blackhole
+@@ -10,6 +10,15 @@
+ shell_root="$project_root/src/quickshell"
+ installer="$project_root/bin/tonantzintla-installer"
+ command_name="${1:-help}"
++# Check before any startup/config side effect; malformed managed state fails closed.
++if [[ -e "${XDG_CONFIG_HOME:-$HOME/.config}/shellswitch/handoff.json" ]]; then
++    python3 "$libexec/shellswitch-handoff.py" "$@" || exit $?
++    case "$command_name" in
++        start|run|session-start|restart|stop) exit 0 ;;
++        help|--help|-h|version|--version|path|doctor|plan|profile|install|update|uninstall) ;;
++        *) [[ "${SHELLSWITCH_GATED:-}" == 1 ]] || exit 0 ;;
++    esac
++fi
+ 
+ usage() {
+     cat <<'EOF'
+--- a/src/libexec/session-daemon.py
++++ b/src/libexec/session-daemon.py
+@@ -13,6 +13,12 @@
+ 
+ 
+ ROOT = Path(__file__).resolve().parents[2]
++
++
++def assert_unmanaged():
++    marker = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "shellswitch/handoff.json"
++    if marker.exists():
++        raise RuntimeError("Shellswitch owns the lifecycle; use blackhole start, not the native supervisor")
+ 
+ 
+ def runtime():
+@@ -85,6 +91,7 @@
+                 if not display_path.exists() or display_path.stat().st_ino != identity:
+                     break
+                 if child is None:
++                    assert_unmanaged()
+                     child = subprocess.Popen(["qs", "-n", "-p", str(ROOT / "src/quickshell")],
+                                              stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                              start_new_session=True)
+@@ -125,6 +132,8 @@
+ 
+ def main():
+     action = sys.argv[1]
++    if action in ("start", "restart", "serve"):
++        assert_unmanaged()
+     directory = runtime()
+     if action == "serve":
+         serve(directory)
+--- /dev/null
++++ b/src/libexec/shellswitch-handoff.py
+@@ -0,0 +1,53 @@
++#!/usr/bin/env python3
++"""Shellswitch handoff v1. Cooperative coordination, not a security boundary."""
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++
++def marker():
++    path = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "shellswitch/handoff.json"
++    if not path.exists():
++        return None
++    data = json.loads(path.read_text())
++    if data.get("version") != 1 or data.get("contract") != "shellswitch-handoff-v1":
++        raise RuntimeError("Unsupported Shellswitch handoff contract")
++    if not Path(data["state_dir"]).is_absolute() or not Path(data["shellswitch"]).is_absolute():
++        raise RuntimeError("Invalid Shellswitch handoff paths")
++    return data
++
++
++def invoke(data, *args):
++    return [data["shellswitch"], "--state-dir", data["state_dir"], *args]
++
++
++def main():
++    data = marker()
++    if data is None:
++        return
++    args = sys.argv[1:]
++    command = args[0] if args else "help"
++    if command in ("start", "run", "session-start", "restart"):
++        os.execv(data["shellswitch"], invoke(data, "resume", "--shell", "tonantzintla"))
++    if command == "stop":
++        os.execv(data["shellswitch"], invoke(data, "disable", "tonantzintla", "--yes"))
++    # Native install/update is guarded separately. sync is intentionally refused:
++    # it executes a freshly pulled installer whose contract cannot be assumed.
++    if command == "sync":
++        raise RuntimeError("Managed by Shellswitch: update source separately, then shellswitch install MANIFEST --payload ROOT --yes; select the new revision explicitly")
++    if command in ("help", "--help", "-h", "version", "--version", "path", "doctor", "plan", "profile", "install", "update", "uninstall"):
++        return
++    if os.environ.get("SHELLSWITCH_GATED") == "1":
++        subprocess.run(invoke(data, "authorize", "tonantzintla", "--purpose", "runtime"), check=True)
++        return
++    os.execv(data["shellswitch"], invoke(data, "gate", "tonantzintla", "--", *args))
++
++
++if __name__ == "__main__":
++    try:
++        main()
++    except (OSError, ValueError, KeyError, RuntimeError, subprocess.CalledProcessError) as error:
++        print(f"Tonantzintla handoff: {error}", file=sys.stderr)
++        sys.exit(1)
+--- a/install/src/main.rs
++++ b/install/src/main.rs
+@@ -1,6 +1,7 @@
+ mod app;
+ mod cli;
+ mod executor;
++mod handoff;
+ mod journal;
+ mod maintain;
+ mod manifest;
+--- /dev/null
++++ b/install/src/handoff.rs
+@@ -0,0 +1,42 @@
++//! Shared ownership lock for native installation. Shellswitch activates separately.
++use anyhow::{Result, ensure};
++use serde_json::Value;
++use std::{
++    fs::{self, File, OpenOptions},
++    path::Path,
++};
++
++pub fn managed(config: &Path) -> bool {
++    config.join("shellswitch/handoff.json").exists()
++}
++
++pub fn installation_lock(config: &Path) -> Result<Option<File>> {
++    if !managed(config) {
++        return Ok(None);
++    }
++    let record: Value =
++        serde_json::from_slice(&fs::read(config.join("shellswitch/handoff.json"))?)?;
++    ensure!(
++        record["version"] == 1 && record["contract"] == "shellswitch-handoff-v1",
++        "Unsupported Shellswitch handoff contract"
++    );
++    let root = Path::new(
++        record["state_dir"]
++            .as_str()
++            .ok_or_else(|| anyhow::anyhow!("Missing state_dir"))?,
++    );
++    ensure!(root.is_absolute(), "Invalid Shellswitch state directory");
++    let lock = OpenOptions::new()
++        .read(true)
++        .write(true)
++        .open(root.join("lock"))?;
++    lock.lock()?;
++    let state: Value = serde_json::from_slice(&fs::read(root.join("state.json"))?)?;
++    ensure!(
++        state["schema"] == 2
++            && state["pending"].is_null()
++            && !root.join("files-pending.json").exists(),
++        "Recover the Shellswitch transaction before installing"
++    );
++    Ok(Some(lock))
++}
+--- a/install/src/executor.rs
++++ b/install/src/executor.rs
+@@ -17,6 +17,16 @@
+ use crate::render;
+ 
+ pub fn execute(plan: &InstallPlan, options: &InstallOptions, assume_yes: bool) -> Result<()> {
++    let _handoff_lock = crate::handoff::installation_lock(&plan.machine.config_home)?;
++    if _handoff_lock.is_some() {
++        ensure!(
++            matches!(options.niri, NiriMode::Keep),
++            "Shellswitch owns Niri: install with --niri keep; activation is a separate shellswitch switch operation"
++        );
++        println!(
++            "Shellswitch managed installation: preserving command gates and Niri; no shell will be started."
++        );
++    }
+     ensure!(
+         plan.supported,
+         "the executor currently supports compatible Arch Linux derivatives only"
+@@ -110,7 +120,9 @@
+     install_packages(plan, store, journal)?;
+     install_runtime(plan, options, store, journal)?;
+     migrate_preferences(plan, store, journal)?;
+-    install_entrypoints(plan, store, journal)?;
++    if !crate::handoff::managed(&plan.machine.config_home) {
++        install_entrypoints(plan, store, journal)?;
++    }
+     validate_runtime(&plan.install_root)?;
+     // Smoke-test the installed tree through its own entry point, which
+     // verifies blackhole resolves and its machine report succeeds.
+@@ -121,7 +133,9 @@
+         journal,
+     )?;
+     complete("validate-source", store, journal)?;
+-    install_niri(plan, options.niri, store, journal)?;
++    if !crate::handoff::managed(&plan.machine.config_home) {
++        install_niri(plan, options.niri, store, journal)?;
++    }
+     complete("umbra", store, journal)?;
+     Ok(())
+ }
+--- a/install/src/maintain.rs
++++ b/install/src/maintain.rs
+@@ -55,6 +55,11 @@
+ /// under. Refuses rather than guessing whenever the checkout is not in a state
+ /// a fast-forward can describe.
+ pub fn update(probe: &ProbeContext, assume_yes: bool) -> Result<()> {
++    // Do not execute a freshly downloaded revision that may lack this contract.
++    ensure!(
++        !crate::handoff::managed(&probe.config_home),
++        "Shellswitch manages this installation: update source separately, then stage with shellswitch install MANIFEST --payload ROOT --yes; switch explicitly"
++    );
+     let install_root = probe.data_home.join("tonantzintla");
+     ensure!(
+         install_root.is_dir(),
+@@ -174,6 +179,10 @@
+ /// Remove only the links this installer created, and only when they still point
+ /// at our runtime. Settings, caches, and wallpapers are user data and stay.
+ pub fn uninstall(probe: &ProbeContext, remove_runtime: bool) -> Result<()> {
++    ensure!(
++        !crate::handoff::managed(&probe.config_home),
++        "Shellswitch owns startup files; do not remove them through the native uninstaller"
++    );
+     let install_root = probe.data_home.join("tonantzintla");
+     let supervisor = install_root.join("src/libexec/session-daemon.py");
+     if supervisor.is_file() {
+--- a/install/tests/executor.rs
++++ b/install/tests/executor.rs
+@@ -663,3 +663,47 @@
+     );
+     fs::write(manifest, contents).unwrap();
+ }
++
++#[test]
++fn managed_install_preserves_niri_and_command_gate_and_rejects_replace() {
++    let sandbox = Sandbox::new("1.0.0");
++    let state = sandbox.state.join("shellswitch");
++    fs::create_dir_all(&state).unwrap();
++    fs::write(state.join("lock"), "").unwrap();
++    fs::write(state.join("state.json"), r#"{"schema":2,"pending":null}"#).unwrap();
++    fs::create_dir_all(sandbox.config.join("shellswitch")).unwrap();
++    fs::write(
++        sandbox.config.join("shellswitch/handoff.json"),
++        serde_json::to_vec(
++            &serde_json::json!({"version":1,"contract":"shellswitch-handoff-v1","state_dir":state}),
++        )
++        .unwrap(),
++    )
++    .unwrap();
++    fs::create_dir_all(sandbox.config.join("niri")).unwrap();
++    let niri = sandbox.config.join("niri/config.kdl");
++    fs::write(&niri, "// active foreign shell and custom settings\n").unwrap();
++    fs::create_dir_all(sandbox.home.join(".local/bin")).unwrap();
++    let gate = sandbox.home.join(".local/bin/blackhole");
++    executable(&gate, "#!/bin/sh\n# owned gate\nexit 77\n");
++    let before = fs::read(&gate).unwrap();
++    let result = sandbox.apply(&["--niri", "keep"]);
++    assert!(
++        result.status.success(),
++        "{}",
++        String::from_utf8_lossy(&result.stderr)
++    );
++    assert_eq!(fs::read(&gate).unwrap(), before);
++    assert_eq!(
++        fs::read_to_string(&niri).unwrap(),
++        "// active foreign shell and custom settings\n"
++    );
++    let result = sandbox.apply(&["--niri", "replace"]);
++    assert!(!result.status.success());
++    assert!(String::from_utf8_lossy(&result.stderr).contains("Shellswitch owns Niri"));
++    fs::write(state.join("files-pending.json"), "{}").unwrap();
++    assert!(!sandbox.apply(&["--niri", "keep"]).status.success());
++    fs::remove_file(state.join("files-pending.json")).unwrap();
++    fs::write(sandbox.config.join("shellswitch/handoff.json"), "broken").unwrap();
++    assert!(!sandbox.apply(&["--niri", "keep"]).status.success());
++}
+--- /dev/null
++++ b/tests/test_shellswitch.py
+@@ -0,0 +1,62 @@
++"""Native contract tests; all configuration, commands and daemon paths isolated."""
++import importlib.util
++import json
++import os
++from pathlib import Path
++import subprocess
++import tempfile
++import unittest
++from unittest.mock import patch
++
++ROOT = Path(__file__).resolve().parents[1]
++
++class HandoffTests(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.root = Path(self.temp.name)
++        self.config = self.root / "config"
++        (self.config / "shellswitch").mkdir(parents=True)
++        self.trace = self.root / "trace"
++        fake = self.root / "shellswitch"
++        fake.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$TRACE"\nexit "${FAKE_STATUS:-0}"\n')
++        fake.chmod(0o755)
++        self.marker = self.config / "shellswitch/handoff.json"
++        self.marker.write_text(json.dumps(dict(version=1, contract="shellswitch-handoff-v1", state_dir=str(self.root / "state"), shellswitch=str(fake))))
++        self.env = dict(os.environ, HOME=str(self.root), XDG_CONFIG_HOME=str(self.config), TRACE=str(self.trace))
++        self.env.pop("SHELLSWITCH_GATED",None)
++    def cli(self, *args, status="0"):
++        return subprocess.run([str(ROOT / "bin/blackhole"), *args],env=dict(self.env,FAKE_STATUS=status),capture_output=True,text=True,timeout=5)
++    def test_start_is_routed_once_and_inactive_denial_propagates(self):
++        self.assertEqual(self.cli("start").returncode,0)
++        self.assertIn("resume --shell tonantzintla",self.trace.read_text())
++        self.assertEqual(len(self.trace.read_text().splitlines()),1)
++        self.assertNotEqual(self.cli("session-start",status="1").returncode,0)
++    def test_shortcut_gate_and_emergency_stop(self):
++        self.assertEqual(self.cli("bar-edit").returncode,0)
++        self.assertIn("gate tonantzintla -- bar-edit",self.trace.read_text())
++        self.assertEqual(self.cli("stop").returncode,0)
++        self.assertIn("disable tonantzintla --yes",self.trace.read_text())
++    def test_direct_supervisor_and_respawn_refuse_managed_mode(self):
++        p = ROOT / "src/libexec/session-daemon.py"
++        result = subprocess.run(["python3",str(p),"start"],env=self.env,capture_output=True,text=True,timeout=5)
++        self.assertNotEqual(result.returncode,0)
++        self.assertIn("Shellswitch owns",result.stderr)
++        spec = importlib.util.spec_from_file_location("daemon",p)
++        module = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(module)
++        with patch.dict(os.environ,self.env):
++            with self.assertRaises(RuntimeError):
++                module.assert_unmanaged() # called before every respawn
++    def test_invalid_record_and_sync_fail_before_mutation(self):
++        self.assertNotEqual(self.cli("sync").returncode,0)
++        self.assertFalse(self.trace.exists())
++        self.marker.write_text("broken")
++        self.assertNotEqual(self.cli("start").returncode,0)
++        self.assertFalse(self.trace.exists())
++    def test_forged_gated_flag_still_requires_valid_lease(self):
++        self.env["SHELLSWITCH_GATED"] = "1"
++        self.assertNotEqual(self.cli("toggle","menu",status="1").returncode,0)
++        self.assertIn("authorize tonantzintla --purpose runtime",self.trace.read_text())
++
++if __name__ == '__main__': unittest.main()

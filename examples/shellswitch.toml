@@ -1,0 +1,30 @@
+# Save as shellswitch.toml in a shell project, or as
+# $XDG_CONFIG_HOME/shellswitch/shells/<name>.toml.
+# Discovery reads this file; it never executes it.
+name = "My custom shell"
+kind = "shell" # shell | component | session | candidate
+protocols = ["wayland"]
+compositors = ["niri"] # omit to declare compositor-independent behavior
+argv = ["/absolute/path/to/my-shell", "--foreground"]
+cwd = "."
+# Use a foreground process that does not daemonize. For existing supervised
+# shells, remove argv/cwd and declare the user service instead:
+# systemd_unit = "my-shell.service"
+# To use a reviewed Bash launcher: argv = ["/usr/bin/bash", "./launch.sh"]
+# launch.sh should end in `exec actual-shell ...` so identity remains stable.
+
+# Optional lifecycle ownership. Use stable id for updates:
+# id = "my-shell"  # place this at top level, before [lifecycle]
+# [lifecycle]
+# adapter = "my-shell-v1"
+# niri_fragment = "shell-only.kdl" # no spawn-at-startup nodes
+# services = ["my-shell.service"] # dedicated units only
+# autostart = ["/home/USER/.config/autostart/my-shell.desktop"]
+# [[lifecycle.commands]]
+# path = "/home/USER/.local/bin/my-shell"
+# [[lifecycle.commands.routes]]
+# prefix = ["toggle"]
+# argv = ["/absolute/path/to/ipc-client", "toggle"]
+# [[lifecycle.processes]]
+# argv_prefix = ["/usr/bin/python3", "/absolute/path/to/owned-daemon.py"]
+# kill_without_cleanup = false
