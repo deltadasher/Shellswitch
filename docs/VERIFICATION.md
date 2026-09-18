@@ -18,3 +18,7 @@ The Niri IPC fixture emits an initial historical success followed by a fresh rel
 Native handoff tests verify that managed startup routes through Shellswitch, denied startup propagates failure, commands are gated, emergency stop is routed correctly, the native supervisor's start/respawn guard refuses managed mode, malformed contracts and managed sync fail before mutation, and an asserted gated flag still requires authorization. Installer fixtures preserve the active Niri file and CLI gate, reject replacement, and refuse pending/malformed manager state.
 
 Not verified: rendered shell usability, the live desktop's service manager, every shell-specific widget/command, third-party installers honoring the contract, or complete discovery of all indirect launch paths. No claim is made about the unconfirmed Kitty trigger. See README for supported paths and operational limits.
+
+## 0.2.5 release checks
+
+The release changes the package version, adds the user-local command installer, and updates documentation; Rust application behavior is unchanged from the suite above. The optimized 0.2.5 build passed, Bash syntax and an isolated installer run passed, and an actual Bash login shell resolved the installed `shellswitch` command and reported `shellswitch 0.2.5`. Cargo formatting and Git whitespace checks passed. The packaged binary requires glibc 2.39 or newer, based on its ELF symbol versions.
