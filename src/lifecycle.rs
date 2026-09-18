@@ -634,6 +634,7 @@ pub fn gate(dir: &Path, id: &str, entry: Option<&Path>, args: &[String]) -> Resu
     let route=endpoint.routes.iter().filter(|r|args.starts_with(&r.prefix)).max_by_key(|r|r.prefix.len()).context("Unsupported command through managed gate; use Shellswitch install/switch/disable for lifecycle changes")?;
     let mut argv = route.argv.clone();
     argv.extend_from_slice(&args[route.prefix.len()..]);
+    normalize_widget_args(l.adapter.as_str(), &mut argv)?;
     let lease = s.active.as_ref().unwrap().lease.clone();
     let ticket = dir.join("tickets").join(ownership::nonce()?);
     fs::create_dir_all(ticket.parent().unwrap())?;
@@ -1030,4 +1031,55 @@ pub fn update_config(dir: &Path, user: &Path, policy: ownership::Policy) -> Resu
     s.last_event =
         "User settings imported with explicit precedence; shell selection unchanged".into();
     store.save(&s)
+}
+
+// Serpantinum's IPC method requires cmd, targetWidget and arg, including an
+// explicit empty arg when the CLI caller omits its optional subtarget.
+fn normalize_widget_args(adapter: &str, argv: &mut Vec<String>) -> Result<()> {
+    if adapter == "serpantinum-bridge-v1" {
+        if let Some(i) = argv
+            .windows(4)
+            .position(|w| w == ["ipc", "call", "main", "handleCommand"])
+        {
+            let count = argv.len() - i - 4;
+            ensure!(
+                (2..=3).contains(&count),
+                "Widget command requires a target and at most one subtarget"
+            );
+            if count == 2 {
+                argv.push(String::new());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod widget_tests {
+    use super::*;
+    #[test]
+    fn optional_widget_subtarget_is_explicit() {
+        let base: Vec<String> = [
+            "qs",
+            "ipc",
+            "call",
+            "main",
+            "handleCommand",
+            "toggle",
+            "settings",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let mut args = base.clone();
+        normalize_widget_args("serpantinum-bridge-v1", &mut args).unwrap();
+        assert_eq!(args.last().unwrap(), "");
+        let mut supplied = base.clone();
+        supplied.push("appearance".into());
+        normalize_widget_args("serpantinum-bridge-v1", &mut supplied).unwrap();
+        assert_eq!(supplied.last().unwrap(), "appearance");
+        let mut missing = base;
+        missing.pop();
+        assert!(normalize_widget_args("serpantinum-bridge-v1", &mut missing).is_err());
+    }
 }
