@@ -772,6 +772,33 @@ pub fn adopt(dir: &Path, c: &Candidate, pid: Option<u32>) -> Result<()> {
     s.last_event="Adopted exact process; install/protect its lifecycle adapter to gate external startup sources".into();
     store.save(&s)
 }
+
+/// Adopt only an unambiguous, currently running shell discovered in this
+/// session. This is deliberately conservative: zero or multiple matching PIDs
+/// never become ownership automatically.
+pub fn auto_adopt(dir: &Path, candidates: &[Candidate]) -> Result<Option<String>> {
+    let store = Store::open(dir)?;
+    let state = store.load()?;
+    if state.pending.is_some() || state.active.as_ref().is_some_and(healthy) {
+        return Ok(None);
+    }
+    let matches: Vec<_> = candidates
+        .iter()
+        .filter(|c| c.kind == crate::model::Kind::Shell)
+        .filter(|c| matches!(c.backend, Backend::Process { .. }))
+        .filter(|c| c.running_pids.len() == 1)
+        .collect();
+    if matches.len() != 1 {
+        return Ok(None);
+    }
+    let c = matches[0];
+    drop(store);
+    adopt(dir, c, c.running_pids.first().copied())?;
+    Ok(Some(format!(
+        "Automatically adopted {} PID {}",
+        c.name, c.running_pids[0]
+    )))
+}
 pub fn resume(dir: &Path, requested: Option<&str>) -> Result<()> {
     let store = Store::open(dir)?;
     store.mutation_ready()?;

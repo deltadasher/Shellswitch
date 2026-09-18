@@ -1,6 +1,6 @@
 [package]
 name = "shellswitch"
-version = "0.2.10"
+version = "0.2.11"
 edition = "2024"
 description = "Evidence-based Linux desktop shell discovery and transactional switching"
 license = "MIT"

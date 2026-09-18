@@ -61,7 +61,7 @@ enum Action {
         #[arg(long)]
         config: PathBuf,
         #[arg(long)]
-        user_config: PathBuf,
+        user_config: Option<PathBuf>,
         #[arg(long, value_enum)]
         policy: ownership::Policy,
         /// Fixture/offline mode: validate files but do not contact a live compositor
@@ -224,7 +224,10 @@ fn main() -> Result<()> {
             yes,
         }) => {
             confirmed(*yes)?;
-            ownership::enroll(&dir, config, user_config, *policy, !offline)?;
+            let baseline = user_config
+                .clone()
+                .unwrap_or_else(|| dir.join("user-config/auto-baseline.kdl"));
+            ownership::enroll(&dir, config, &baseline, *policy, !offline)?;
             println!("Configuration enrolled; live entrypoint unchanged");
             return Ok(());
         }
@@ -329,6 +332,9 @@ fn main() -> Result<()> {
         report.candidates.push(c);
     }
     report.candidates.sort_by(|a, b| a.name.cmp(&b.name));
+    if let Some(message) = control::auto_adopt(&dir, &report.candidates)? {
+        eprintln!("SHELLSWITCH: {message}");
+    }
     let find = |id: &str| -> Result<&model::Candidate> {
         let choices: Vec<_> = report
             .candidates
