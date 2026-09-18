@@ -604,13 +604,42 @@ pub fn authorize(dir: &Path, id: &str, purpose: &str) -> Result<()> {
 pub fn gate(dir: &Path, id: &str, entry: Option<&Path>, args: &[String]) -> Result<()> {
     let store = Store::open(dir)?;
     let mut s = store.load()?;
+    // Introspection is always available, including for inactive shells.
+    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") || args == ["help"] {
+        println!("{id}: Shellswitch-managed entrypoint");
+        println!("Lifecycle: start / session-start / run (resume selected shell); status");
+        println!(
+            "Switch, stop, restart or update through Shellswitch to preserve rollback and ownership."
+        );
+        if let Some(c) = s.installed.get(id)
+            && let Some(l) = &c.lifecycle
+        {
+            for endpoint in &l.commands {
+                if entry.is_none_or(|p| endpoint.path == p) {
+                    for route in &endpoint.routes {
+                        println!("  {}", route.prefix.join(" "));
+                    }
+                }
+            }
+        }
+
+        return Ok(());
+    }
+    if args == ["status"] {
+        println!(
+            "{id}: selected={}, running={}, disabled={}, trial={}",
+            s.selected.as_deref() == Some(id),
+            s.active
+                .as_ref()
+                .is_some_and(|r| r.candidate.id == id && control::healthy(r)),
+            s.disabled.contains(id),
+            s.pending.is_some()
+        );
+        return Ok(());
+    }
     ensure!(
-        s.pending.is_none() && !dir.join("files-pending.json").exists(),
-        "Shell entrypoints are gated during handoff/recovery"
-    );
-    ensure!(
-        s.selected.as_deref() == Some(id) && !s.disabled.contains(id),
-        "{id} is inactive or disabled; select it explicitly in Shellswitch"
+        gate_allows(&s, id) && !dir.join("files-pending.json").exists(),
+        "{id} is inactive, disabled, or undergoing handoff; select it explicitly in Shellswitch"
     );
     control::check_config(&s)?;
     if args
@@ -631,9 +660,33 @@ pub fn gate(dir: &Path, id: &str, entry: Option<&Path>, args: &[String]) -> Resu
         .iter()
         .find(|e| entry.is_none_or(|p| e.path == p))
         .context("Unknown CLI entrypoint")?;
-    let route=endpoint.routes.iter().filter(|r|args.starts_with(&r.prefix)).max_by_key(|r|r.prefix.len()).context("Unsupported command through managed gate; use Shellswitch install/switch/disable for lifecycle changes")?;
+    let mut routes = endpoint.routes.clone();
+    if l.adapter == "tonantzintla-bridge-v1"
+        && let crate::model::Backend::Process { argv, .. } = &c.backend
+    {
+        for (name, tail) in [
+            ("lock", vec!["umbra", "lock"]),
+            ("preview-lock", vec!["umbra", "preview"]),
+            ("quick", vec!["quickactions", "toggle"]),
+        ] {
+            if !routes.iter().any(|r| r.prefix == [name]) {
+                let mut command = argv.clone();
+                command.extend(["ipc".into(), "call".into()]);
+                command.extend(tail.into_iter().map(str::to_owned));
+                routes.push(crate::ownership::Route {
+                    prefix: vec![name.into()],
+                    argv: command,
+                });
+            }
+        }
+    }
+
+    let route=routes.iter().filter(|r|args.starts_with(&r.prefix)).max_by_key(|r|r.prefix.len()).context("Unsupported command through managed gate; use Shellswitch install/switch/disable for lifecycle changes")?;
     let mut argv = route.argv.clone();
     argv.extend_from_slice(&args[route.prefix.len()..]);
+    if l.adapter == "tonantzintla-bridge-v1" && args == ["quick"] {
+        argv.push("telemetry".into());
+    }
     normalize_widget_args(l.adapter.as_str(), &mut argv)?;
     let lease = s.active.as_ref().unwrap().lease.clone();
     let ticket = dir.join("tickets").join(ownership::nonce()?);
@@ -644,6 +697,7 @@ pub fn gate(dir: &Path, id: &str, entry: Option<&Path>, args: &[String]) -> Resu
         .arg(&ticket)
         .arg("--")
         .args(&argv)
+        .envs(crate::adapters::launch_environment(c)?)
         .env("SHELLSWITCH_STATE_DIR", dir)
         .env("SHELLSWITCH_SHELL_ID", id)
         .env("SHELLSWITCH_HANDOFF", &lease)
@@ -1036,21 +1090,21 @@ pub fn update_config(dir: &Path, user: &Path, policy: ownership::Policy) -> Resu
 // Serpantinum's IPC method requires cmd, targetWidget and arg, including an
 // explicit empty arg when the CLI caller omits its optional subtarget.
 fn normalize_widget_args(adapter: &str, argv: &mut Vec<String>) -> Result<()> {
-    if adapter == "serpantinum-bridge-v1" {
-        if let Some(i) = argv
+    if adapter == "serpantinum-bridge-v1"
+        && let Some(i) = argv
             .windows(4)
             .position(|w| w == ["ipc", "call", "main", "handleCommand"])
-        {
-            let count = argv.len() - i - 4;
-            ensure!(
-                (2..=3).contains(&count),
-                "Widget command requires a target and at most one subtarget"
-            );
-            if count == 2 {
-                argv.push(String::new());
-            }
+    {
+        let count = argv.len() - i - 4;
+        ensure!(
+            (2..=3).contains(&count),
+            "Widget command requires a target and at most one subtarget"
+        );
+        if count == 2 {
+            argv.push(String::new());
         }
     }
+
     Ok(())
 }
 
@@ -1081,5 +1135,43 @@ mod widget_tests {
         let mut missing = base;
         missing.pop();
         assert!(normalize_widget_args("serpantinum-bridge-v1", &mut missing).is_err());
+    }
+}
+
+fn gate_allows(s: &State, id: &str) -> bool {
+    !s.disabled.contains(id)
+        && match &s.pending {
+            Some(p) => {
+                p.phase == control::Phase::Trial
+                    && p.target.id == id
+                    && s.active.as_ref().is_some_and(|r| r.candidate.id == id)
+            }
+            None => s.selected.as_deref() == Some(id),
+        }
+}
+
+#[cfg(test)]
+mod gate_policy_tests {
+    use super::*;
+    #[test]
+    fn arbitrary_shell_selection_and_emergency_hold() {
+        let mut s = State {
+            selected: Some("unknown-shell-42".into()),
+            ..State::default()
+        };
+        assert!(gate_allows(&s, "unknown-shell-42"));
+        assert!(!gate_allows(&s, "other"));
+        s.disabled.insert("unknown-shell-42".into());
+        assert!(!gate_allows(&s, "unknown-shell-42"));
+    }
+    #[test]
+    fn help_and_status_work_without_a_running_shell() {
+        let dir =
+            std::env::temp_dir().join(format!("shellswitch-gate-{}", ownership::nonce().unwrap()));
+        std::fs::create_dir_all(&dir).unwrap();
+        gate(&dir, "arbitrary", None, &[]).unwrap();
+        gate(&dir, "arbitrary", None, &["status".into()]).unwrap();
+        assert!(gate(&dir, "arbitrary", None, &["start".into()]).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

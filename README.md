@@ -169,3 +169,18 @@ Core code: `control.rs` (journal/transactions), `ownership.rs` (snapshots/KDL), 
 - [Linutil](https://github.com/ChrisTitusTech/linutil), visual inspiration; no code copied.
 
 Shellswitch core is MIT. The separate Tonantzintla integration patch modifies GPL-3.0-or-later upstream code and is supplied under that license; it is not a relicensing of Tonantzintla.
+
+### Managed command compatibility
+
+Protected CLI entrypoints provide managed help (including no arguments), status,
+and start/session-start/run for the selected shell. They do not run a competing
+native daemon. Registered runtime routes work during the destination's trial;
+inactive shells and emergency-held shells cannot use those routes. Commands
+receive the selected adapter's runtime environment.
+
+CLI compatibility is explicit, not inferred from arbitrary command names.
+Unmapped commands remain rejected. In particular, installation, updates, native
+restart, and configuration ownership operations must not silently pass through
+to upstream launchers. Tonantzintla additionally maps lock, preview-lock and quick
+actions directly to its IPC. Native daemon internals are not reproduced.
+These guarantees cover managed entrypoints, not programs bypassing them.
