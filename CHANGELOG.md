@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.9
+
+- Refuse switching when Niri configuration ownership has not been enrolled.
+- Refuse switching away from an unmanaged active shell whose supervisor/respawn paths cannot be controlled safely.
+- Show diagnostics and concrete repair commands for both conditions.
+
 ## 0.2.8
 
 - Prevent timestamped runtime backups from being selected as current shell roots.

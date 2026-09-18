@@ -464,6 +464,18 @@ pub fn plan(c: &Candidate, session: &Session, s: &State) -> Result<String> {
         c.id
     );
     ensure!(
+        s.config.is_some(),
+        "Configuration ownership is not enrolled. Enroll the current Niri config first; otherwise its existing spawn-at-startup entries can resurrect the previous shell"
+    );
+    if let Some(active) = &s.active
+        && active.candidate.id != c.id
+    {
+        ensure!(
+            active.candidate.lifecycle.is_some(),
+            "The currently running shell is unmanaged. Register its lifecycle adapter before switching so its supervisor and respawn paths can be stopped"
+        );
+    }
+    ensure!(
         !s.active.as_ref().is_some_and(|r| r.candidate.id == c.id
             && r.candidate.source == c.source
             && healthy(r)),

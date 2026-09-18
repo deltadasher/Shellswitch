@@ -662,6 +662,29 @@ pub struct Diagnostic {
 }
 pub fn diagnostics(dir: &Path, s: &State) -> Vec<Diagnostic> {
     let mut d = vec![];
+    if s.config.is_none() && s.selected.is_some() {
+        d.push(Diagnostic {
+            code: "unowned-config".into(),
+            detail: "A shell is selected while the Niri entrypoint is outside Shellswitch ownership".into(),
+            repair: "enroll --config ~/.config/niri/config.kdl --user-config REVIEWED_BASELINE --policy preserve-user --yes".into(),
+        });
+    }
+    if let Some(active) = &s.active
+        && active.candidate.lifecycle.is_none()
+    {
+        d.push(Diagnostic {
+            code: "unmanaged-active-shell".into(),
+            detail: format!(
+                "{} is running without a lifecycle adapter",
+                active.candidate.name
+            ),
+            repair: format!(
+                "adapter {} --shell-root {} > shellswitch.toml, review it, then install it",
+                active.candidate.name.to_ascii_lowercase(),
+                active.candidate.source.display()
+            ),
+        });
+    }
     let mut add = |code: &str, detail: String, repair: &str| {
         d.push(Diagnostic {
             code: code.into(),
