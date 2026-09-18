@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.6
+
+- Refresh default discovery from the complete user XDG data tree on every scan.
+- Detect Quickshell entrypoints case-insensitively, including installed `Shell.qml` trees.
+- Add regression coverage for installed runtimes outside application metadata directories.
+
 ## 0.2.5
 
 First official GitHub release.

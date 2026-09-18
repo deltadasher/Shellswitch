@@ -74,7 +74,13 @@ pub fn default_roots() -> Vec<PathBuf> {
         paths.extend(std::env::split_paths(&dirs));
     }
     if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
-        paths.push(PathBuf::from(dir).join("applications"));
+        paths.push(PathBuf::from(&dir).join("applications"));
+        // Installed shells commonly live in an application-owned tree under
+        // XDG_DATA_HOME (for example ~/.local/share/<shell>/src/quickshell).
+        // Scanning only applications misses those runtimes entirely.
+        paths.push(PathBuf::from(dir));
+    } else {
+        paths.push(home().join(".local/share"));
     }
     paths
 }
@@ -425,7 +431,8 @@ pub fn scan(roots: &[PathBuf]) -> Report {
             };
             continue;
         }
-        let relevant = name == "shell.qml"
+        let lower_name = name.to_ascii_lowercase();
+        let relevant = lower_name == "shell.qml"
             || name == "eww.yuck"
             || ["app.ts", "app.tsx", "config.js", "config.ts", "main.py"].contains(&name.as_ref())
             || path
@@ -443,7 +450,7 @@ pub fn scan(roots: &[PathBuf]) -> Report {
             }
             continue;
         }
-        if name == "shell.qml" && text.contains("import Quickshell") {
+        if lower_name == "shell.qml" && text.contains("import Quickshell") {
             let mut c = base(path, folder_name(path), "Quickshell", Kind::Shell);
             c.evidence
                 .push("Quickshell entrypoint imports its shell runtime".into());
@@ -457,17 +464,19 @@ pub fn scan(roots: &[PathBuf]) -> Report {
             if std::env::var_os("WAYLAND_DISPLAY").is_none() {
                 c.required_globals.clear();
             }
+            let shell_root = text.contains("ShellRoot") || text.contains("Shell {");
             let surfaces = source.contains("PanelWindow") || source.contains("WlrLayershell");
-            if surfaces {
+            if surfaces || shell_root {
                 c.evidence.push(
-                    "Entrypoint tree contains a panel surface; static evidence, not runtime proof"
+                    if surfaces { "Entrypoint tree contains a panel surface; static evidence, not runtime proof" }
+                    else { "Quickshell entrypoint declares a shell root; static evidence, not runtime proof" }
                         .into(),
                 );
                 if let Some(qs) = executable("qs").or_else(|| executable("quickshell")) {
                     c.backend = Backend::Process {
                         argv: vec![
                             qs.to_string_lossy().into_owned(),
-                            "--path".into(),
+                            "-p".into(),
                             path.to_string_lossy().into_owned(),
                         ],
                         cwd: path.parent().unwrap().into(),
@@ -643,6 +652,26 @@ mod tests {
             .iter()
             .find(|c| c.source == t.path().join("shell.qml"))
             .unwrap();
-        assert_eq!(c.kind, Kind::Candidate);
+        assert_eq!(c.kind, Kind::Shell);
+    }
+
+    #[test]
+    fn finds_installed_quickshell_under_xdg_data_with_case_insensitive_entrypoint() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("serpantinum/src/quickshell");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("Shell.qml"),
+            "import Quickshell\nShellRoot {}\nPanelWindow {}",
+        )
+        .unwrap();
+        let report = scan(&[t.path().into()]);
+        let candidate = report
+            .candidates
+            .iter()
+            .find(|c| c.source == root.join("Shell.qml"))
+            .expect("installed Shell.qml should be discovered");
+        assert_eq!(candidate.name, "serpantinum");
+        assert_eq!(candidate.kind, Kind::Shell);
     }
 }

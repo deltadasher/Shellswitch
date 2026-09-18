@@ -1,4 +1,4 @@
-# Shellswitch 0.2.5
+# Shellswitch 0.2.6
 
 Rust desktop-shell discovery and transactional lifecycle control, with a three-pane Ratatui interface inspired by Linutil. This version adds configuration ownership, inactive-shell gates, staged installs, rollback, and incident-specific Tonantzintla/Serpantinum bridges.
 
@@ -24,7 +24,7 @@ shellswitch doctor
 shellswitch inventory
 ```
 
-**Development did not change the live desktop.** The included binary and Tonantzintla patch are tested deliverables, not an assertion that the installed desktop is already protected. First review the startup inventory and integration gaps below.
+**Development did not change the live desktop.** The included binary and Tonantzintla patch are tested deliverables, not an assertion that the installed desktop is already protected. Discovery runs a fresh bounded scan each time you open Shellswitch or run `scan`; it is not a one-time database. First review the startup inventory and integration gaps below.
 
 ## Transaction and ownership
 
@@ -140,7 +140,7 @@ Shellswitch uses **open-ended discovery and explicit evidence**, not a catalog o
 | Running processes | Correlates exact launch/config identities; adds mapped shell-library evidence where `/proc` permits it; filters by graphical session |
 | Local manifests | Defines an arbitrary shell's exact argv or dedicated user-service unit, protocol/compositor constraints, and required Wayland globals |
 
-Default roots include XDG config, application/session directories, local launchers, system user-unit definitions, `/usr/bin`, and `/usr/local/bin`. It does **not** search the Internet, install packages, read every file on every disk, or automatically run unknown executables to identify them. Add project trees explicitly:
+Default roots include XDG config, the complete user XDG data tree, application/session directories, local launchers, system user-unit definitions, `/usr/bin`, and `/usr/local/bin`. This catches installed runtimes such as `~/.local/share/<provider>/src/quickshell/Shell.qml`, including uppercase entrypoint names. It does **not** search the Internet, install packages, read every file on every disk, or automatically run unknown executables to identify them. Add project trees explicitly when they live elsewhere:
 
 ```bash
 shellswitch --root /path/to/custom/shells
