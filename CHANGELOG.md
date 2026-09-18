@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.7
+
+- Prevent bulk user data, rollback copies, and caches from consuming the discovery budget before installed shell runtimes are reached.
+- Group helper scripts inside a detected shell project under its entrypoint instead of listing them as independent shells.
+- Add regression coverage for project grouping.
+
 ## 0.2.6
 
 - Refresh default discovery from the complete user XDG data tree on every scan.
