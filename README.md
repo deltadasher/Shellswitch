@@ -1,11 +1,27 @@
-# Shellswitch 0.2
+# Shellswitch 0.2.5
 
 Rust desktop-shell discovery and transactional lifecycle control, with a three-pane Ratatui interface inspired by Linutil. This version adds configuration ownership, inactive-shell gates, staged installs, rollback, and incident-specific Tonantzintla/Serpantinum bridges.
 
+## Install the command
+
+Download and extract the Linux x86_64 archive from the [0.2.5 release](https://github.com/deltadasher/Shellswitch/releases/tag/v0.2.5), then run:
+
 ```sh
-./shellswitch                 # browse; opening the TUI does not activate anything
-./shellswitch doctor
-./shellswitch inventory
+./install.sh
+shellswitch --version
+shellswitch
+```
+
+The installer places the executable at `~/.local/bin/shellswitch`. If that directory is not on PATH, it prints the Bash line to add. It does not activate a desktop shell or change Niri, startup files, or shell selection. From a source checkout, the same installer builds with Cargo first when there is no bundled binary. `--bin-dir DIRECTORY` selects a different command location.
+
+The release binary targets Linux x86_64 with glibc 2.39 or newer and libgcc_s; it is not a static musl or ARM binary. Build from source if your system cannot run it. Keep the installed path stable because managed entrypoints refer to it.
+
+## Open Shellswitch
+
+```sh
+shellswitch                 # browse; opening the TUI does not activate anything
+shellswitch doctor
+shellswitch inventory
 ```
 
 **Development did not change the live desktop.** The included binary and Tonantzintla patch are tested deliverables, not an assertion that the installed desktop is already protected. First review the startup inventory and integration gaps below.
@@ -19,11 +35,11 @@ A switch captures the previous selection, exact process identities, entrypoint b
 The process supervisor waits for a durable launch ticket before executing shell code. A detached watchdog handles interrupted switches and the 20-second confirmation period. File-only operations have a separate recoverable journal. Recovery archives intervening external edits instead of discarding them. If recovery itself fails, its journal remains for `recover --yes`; this is not a guarantee against disk failure or arbitrary same-user interference.
 
 ```sh
-./shellswitch switch SHELL_ID --yes
-./shellswitch keep              # within 20 seconds after readiness
+shellswitch switch SHELL_ID --yes
+shellswitch keep              # within 20 seconds after readiness
 # alternatively:
-./shellswitch revert
-./shellswitch recover --yes     # interrupted operation; safe to repeat
+shellswitch revert
+shellswitch recover --yes     # interrupted operation; safe to repeat
 ```
 
 Process survival and successful validation do not prove visual usability. Inspect the desktop before keeping the trial. Niri live reload requires `load-config-file --path` and `ConfigLoaded` event support (tested against the 26.04 interface using a fixture). `enroll --offline` is for fixtures/offline validation, not a verified live handoff.
@@ -33,12 +49,12 @@ Process survival and successful validation do not prove visual usability. Inspec
 `install` copies a payload into a versioned package directory and records its manifest. It never starts the shell, rewrites Niri, replaces command gates, clears a hold, or selects the new revision. It is not a dependency package manager. Use `--payload` for pinned runtime code; without it only metadata/configuration is captured and referenced code remains mutable.
 
 ```sh
-./shellswitch install /path/to/shellswitch.toml --payload /path/to/project --yes
-./shellswitch enroll --config "$HOME/.config/niri/config.kdl" \
+shellswitch install /path/to/shellswitch.toml --payload /path/to/project --yes
+shellswitch enroll --config "$HOME/.config/niri/config.kdl" \
   --user-config /path/to/my-reviewed-user-baseline.kdl --policy preserve-user --yes
-./shellswitch inventory
-./shellswitch protect --yes
-./shellswitch plan SHELL_ID
+shellswitch inventory
+shellswitch protect --yes
+shellswitch plan SHELL_ID
 ```
 
 Keep the executable at a stable absolute path before protection/activation: generated gates and startup use that path. Enrolment snapshots configuration but leaves the live entrypoint unchanged. The user baseline should contain your own settings and bindings; review old shell startup commands and includes before adopting it. Shell-specific fragments must omit startup nodes: Shellswitch supplies `resume`. Shellswitch does not delete arbitrary personal startup commands from your baseline.
@@ -54,7 +70,7 @@ Conflict policy is mandatory:
 Files are not silently text-merged. In particular, Niri does not merge every nested setting. The original files and captured includes remain available. Intentional user changes use the same explicit policy:
 
 ```sh
-./shellswitch config-update --user-config /path/to/edited-baseline.kdl \
+shellswitch config-update --user-config /path/to/edited-baseline.kdl \
   --policy preserve-user --yes
 ```
 
@@ -67,12 +83,12 @@ Lifecycle manifests declare public CLI paths, supported command routes, dedicate
 Declared inactive systemd services are persistently masked in the user configuration, then stopped. Declared autostarts become `Hidden=true` overrides. The selected shell resumes through Shellswitch. Legacy processes are matched by exact declared executable/arguments and signalled using PID/start-time/boot identity with pidfds. Serpantinum's legacy daemon uses exact-PID forced termination to avoid its broad cleanup trap; no generic `pkill -f` is used.
 
 ```sh
-./shellswitch doctor                  # concise findings and next actions
-./shellswitch doctor --json
-./shellswitch inventory               # declarations + bounded static startup references
-./shellswitch repair --yes            # archive overwrite, restore ownership; no shell launch
-./shellswitch disable serpantinum --yes
-./shellswitch release serpantinum --yes
+shellswitch doctor                  # concise findings and next actions
+shellswitch doctor --json
+shellswitch inventory               # declarations + bounded static startup references
+shellswitch repair --yes            # archive overwrite, restore ownership; no shell launch
+shellswitch disable serpantinum --yes
+shellswitch release serpantinum --yes
 ```
 
 `disable` first persists an emergency hold, stops that shell, and keeps supported startup paths gated. `release` clears the hold **without starting it**; selecting it requires a subsequent switch. Disabling the selected shell leaves its last configuration in place so personal settings remain available; its command gates deny execution. The hold survives installation/update and interrupted cleanup.
@@ -84,8 +100,8 @@ TUI: arrows select, Tab changes group, `/` searches, Enter reviews a switch, `k`
 Generate a bridge against the actual installed/source root; these commands only print TOML:
 
 ```sh
-./shellswitch adapter tonantzintla --shell-root /path/to/Tonantzintla > tonantzintla.toml
-./shellswitch adapter serpantinum --shell-root /path/to/serpantinum > serpantinum.toml
+shellswitch adapter tonantzintla --shell-root /path/to/Tonantzintla > tonantzintla.toml
+shellswitch adapter serpantinum --shell-root /path/to/serpantinum > serpantinum.toml
 ```
 
 Add `--fragment /path/to/reviewed-shell-only.kdl` when shell-specific Niri settings are wanted. No full vendor configuration is guessed or imported. Review/add the service names, autostart override paths and exact legacy launch forms found by inventory **before** installing/protecting. The generated bridges cover observed source layouts, not every historical launch spelling.
@@ -127,8 +143,8 @@ Shellswitch uses **open-ended discovery and explicit evidence**, not a catalog o
 Default roots include XDG config, application/session directories, local launchers, system user-unit definitions, `/usr/bin`, and `/usr/local/bin`. It does **not** search the Internet, install packages, read every file on every disk, or automatically run unknown executables to identify them. Add project trees explicitly:
 
 ```bash
-./shellswitch --root /path/to/custom/shells
-./shellswitch --isolated --root /path/to/a/project scan --json
+shellswitch --root /path/to/custom/shells
+shellswitch --isolated --root /path/to/a/project scan --json
 ```
 
 Limits: depth 12, 30,000 files; text metadata up to 512 KiB; shell component aggregation up to about 2 MiB; generic evidence budget 512 MiB and a 128 KiB sample for executables. Large, deeply nested, obfuscated, statically linked or unusual projects can be missed. Scan a narrower root and/or supply a manifest. Source references can be optional or appear in comments; a manifest can correct inferred constraints.
