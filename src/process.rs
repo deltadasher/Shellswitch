@@ -71,6 +71,19 @@ pub fn alive(id: &Identity) -> bool {
             && p.state != 'X'
     })
 }
+/// Ownership follows a live recorded identity, never a shell display name or ID.
+pub fn owns(id: &Identity, owned_group: bool, process: &Process) -> bool {
+    alive(id) && ownership_matches(id, owned_group, process)
+}
+
+fn ownership_matches(id: &Identity, owned_group: bool, process: &Process) -> bool {
+    process.identity.boot == id.boot
+        && process.state != 'Z'
+        && process.state != 'X'
+        && ((process.identity.pid == id.pid && process.identity.start == id.start)
+            || (owned_group && process.group == id.pid && process.identity.start >= id.start))
+}
+
 fn same_path(a: &str, b: &str) -> bool {
     fs::canonicalize(a)
         .ok()
@@ -351,6 +364,35 @@ pub fn supervise(argv: &[String], ticket: Option<&std::path::Path>) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn supervised_ownership_ignores_labels_but_rejects_unrelated_and_stale_processes() {
+        let id = Identity {
+            pid: 100,
+            start: 500,
+            boot: "boot-a".into(),
+        };
+        let mut child = Process {
+            identity: Identity {
+                pid: 101,
+                start: 501,
+                boot: "boot-a".into(),
+            },
+            argv: vec!["arbitrary-shell".into()],
+            cwd: PathBuf::from("/tmp"),
+            group: 100,
+            state: 'S',
+        };
+        assert!(ownership_matches(&id, true, &child));
+        assert!(!ownership_matches(&id, false, &child));
+        child.group = 200;
+        assert!(!ownership_matches(&id, true, &child));
+        child.group = 100;
+        child.identity.boot = "boot-b".into();
+        assert!(!ownership_matches(&id, true, &child));
+        child.identity.boot = "boot-a".into();
+        child.identity.start = 499;
+        assert!(!ownership_matches(&id, true, &child));
+    }
     #[test]
     fn refuses_recycled_identity() {
         let mut id = inspect(std::process::id()).unwrap().identity;
