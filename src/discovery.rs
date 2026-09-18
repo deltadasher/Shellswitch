@@ -75,14 +75,38 @@ pub fn default_roots() -> Vec<PathBuf> {
     }
     if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
         paths.push(PathBuf::from(&dir).join("applications"));
-        // Installed shells commonly live in an application-owned tree under
-        // XDG_DATA_HOME (for example ~/.local/share/<shell>/src/quickshell).
-        // Scanning only applications misses those runtimes entirely.
-        paths.push(PathBuf::from(dir));
+        paths.extend(installed_runtime_roots(&PathBuf::from(dir)));
     } else {
-        paths.push(home().join(".local/share"));
+        paths.extend(installed_runtime_roots(&home().join(".local/share")));
     }
     paths
+}
+
+/// Find application-owned data trees without recursively scanning bulk data
+/// such as Steam, fonts, caches, or launcher's databases. This is generic:
+/// the markers describe runtime layout, never a provider name.
+fn installed_runtime_roots(data_home: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(data_home) else {
+        return vec![];
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let has_runtime_layout = [
+                "src/quickshell/shell.qml",
+                "src/quickshell/Shell.qml",
+                "quickshell/shell.qml",
+                "quickshell/Shell.qml",
+            ]
+            .iter()
+            .any(|suffix| path.join(suffix).is_file());
+            has_runtime_layout.then_some(path)
+        })
+        .collect()
 }
 fn read(path: &Path) -> Option<String> {
     let m = fs::metadata(path).ok()?;
@@ -122,6 +146,15 @@ fn walk(
     entries.sort();
     for p in entries {
         let name = p.file_name().unwrap_or_default().to_string_lossy();
+        // User data often contains timestamped rollback copies. Treat clearly
+        // archival directories as low-value scan material so one provider's
+        // backups cannot consume the global budget before current runtimes.
+        let archive_dir = p.is_dir()
+            && ((name.starts_with('.')
+                && ["previous", "backup", "old", "rollback"]
+                    .iter()
+                    .any(|marker| name.to_ascii_lowercase().contains(marker)))
+                || name.to_ascii_lowercase().ends_with(".bak"));
         if [
             ".git",
             "node_modules",
@@ -139,6 +172,7 @@ fn walk(
             "Codex",
         ]
         .contains(&name.as_ref())
+            || archive_dir
         {
             continue;
         }
@@ -570,7 +604,32 @@ pub fn scan(roots: &[PathBuf]) -> Report {
         .collect();
     candidates
         .retain(|c| c.declared || !c.source.parent().is_some_and(|p| declared_dirs.contains(p)));
+    // Once an actual shell entrypoint identifies its project tree, component
+    // scripts in that same tree are evidence for the shell, not separate
+    // switchable desktop shells. Keep the parent project as one candidate.
+    let inferred_projects: Vec<_> = candidates
+        .iter()
+        .filter(|c| c.kind == Kind::Shell)
+        .filter_map(|c| {
+            c.source
+                .ancestors()
+                .find(|p| p.join("src").is_dir() || p.join("quickshell").is_dir())
+                .map(Path::to_path_buf)
+        })
+        .collect();
+    candidates.retain(|c| {
+        c.kind == Kind::Shell
+            || !inferred_projects
+                .iter()
+                .any(|root| c.source.starts_with(root))
+    });
     crate::generic::augment(&files, &mut candidates, &mut warnings);
+    candidates.retain(|c| {
+        c.kind == Kind::Shell
+            || !inferred_projects
+                .iter()
+                .any(|root| c.source.starts_with(root))
+    });
     fn rank(c: &Candidate) -> u8 {
         match c.kind {
             Kind::Shell => 0,
@@ -673,5 +732,29 @@ mod tests {
             .expect("installed Shell.qml should be discovered");
         assert_eq!(candidate.name, "serpantinum");
         assert_eq!(candidate.kind, Kind::Shell);
+    }
+
+    #[test]
+    fn groups_shell_project_helpers_under_the_entrypoint() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("provider/src/quickshell");
+        let scripts = t.path().join("provider/src/scripts");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&scripts).unwrap();
+        fs::write(root.join("Shell.qml"), "import Quickshell\nShellRoot {}\n").unwrap();
+        fs::write(
+            scripts.join("launcher.sh"),
+            "#!/bin/sh\nexec qs -p Shell.qml\n",
+        )
+        .unwrap();
+        let report = scan(&[t.path().into()]);
+        assert_eq!(
+            report
+                .candidates
+                .iter()
+                .filter(|c| c.source.starts_with(t.path().join("provider")))
+                .count(),
+            1
+        );
     }
 }
