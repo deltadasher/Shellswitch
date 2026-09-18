@@ -269,17 +269,30 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut a = App::default();
     let mut pending_action = 's';
+    let automatic_roots = roots.iter().any(|p| p == &discovery::config_home());
+    let mut last_scan = std::time::Instant::now();
     loop {
         let state = {
             let store = control::Store::open(&dir)?;
             store.load()?
         };
         terminal.draw(|f| draw(f, &report, &a, &state))?;
-        if !event::poll(Duration::from_millis(200))? {
-            continue;
-        }
-        let Event::Key(key) = event::read()? else {
-            continue;
+        let refresh_due = last_scan.elapsed() >= Duration::from_secs(5)
+            && a.confirm.is_none()
+            && state.pending.is_none();
+        let key = if refresh_due {
+            crossterm::event::KeyEvent::new(
+                KeyCode::Char('r'),
+                crossterm::event::KeyModifiers::NONE,
+            )
+        } else {
+            if !event::poll(Duration::from_millis(200))? {
+                continue;
+            }
+            let Event::Key(key) = event::read()? else {
+                continue;
+            };
+            key
         };
         if key.kind != KeyEventKind::Press {
             continue;
@@ -368,7 +381,14 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
             KeyCode::PageDown => a.scroll = a.scroll.saturating_add(6),
             KeyCode::PageUp => a.scroll = a.scroll.saturating_sub(6),
             KeyCode::Char('r') => {
-                report = discovery::scan(&roots);
+                let mut scan_roots = roots.clone();
+                if automatic_roots {
+                    scan_roots.extend(discovery::default_roots());
+                }
+                scan_roots.sort();
+                scan_roots.dedup();
+                report = discovery::scan(&scan_roots);
+                last_scan = std::time::Instant::now();
                 for c in lifecycle::registry(&dir)? {
                     if c.lifecycle.is_some() {
                         report
@@ -379,7 +399,6 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
                     report.candidates.push(c);
                 }
                 crate::process::annotate(&mut report.candidates);
-                a.selected = 0;
                 a.message = format!("Scan complete. {}", report.warnings.join("; "));
             }
             KeyCode::Enter => {
