@@ -566,6 +566,9 @@ pub fn enroll(
     let target = absolute(target)?;
     let current = read(&target)?;
     bytes(&current)?;
+    if !user.exists() {
+        make_baseline(&target, user)?;
+    }
     let (root, files) = freeze(user, &dir.join("user-config").join(nonce()?))?;
     validate(&root)?;
     s.config = Some(Config {
@@ -582,6 +585,31 @@ pub fn enroll(
     s.last_event =
         "Niri config enrolled and snapshotted; no entrypoint or shell was changed".into();
     store.save(&s)
+}
+
+/// Create a conservative personal baseline when the caller omits one. It
+/// preserves ordinary Niri settings and removes startup commands so the
+/// enrolled Shellswitch resume entry is the only shell launcher. The source
+/// configuration remains untouched and the generated file is reviewable.
+pub fn make_baseline(target: &Path, baseline: &Path) -> Result<()> {
+    let source_text = fs::read_to_string(target)?;
+    let mut out = String::new();
+    for line in source_text.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("spawn-at-startup")
+            && !lower.contains("dbus-update-activation-environment")
+            && !lower.contains("polkit")
+        {
+            out.push_str("// Shellswitch removed unmanaged startup command: ");
+            out.push_str(line);
+            out.push('\n');
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    let baseline = absolute(baseline)?;
+    write(&baseline, &text(&out, 0o600))
 }
 
 #[cfg(test)]

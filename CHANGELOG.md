@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.11
+
+- Automatically adopt one unambiguous recognized running shell when Shellswitch starts.
+- Automatically generate a reviewable Niri user baseline when `enroll` omits `--user-config`.
+- Remove unmanaged shell startup commands from that generated baseline while preserving common D-Bus and Polkit startup.
+
 ## 0.2.10
 
 - Migrate hash-based discovered registry entries to stable manifest IDs when installing a lifecycle adapter.
