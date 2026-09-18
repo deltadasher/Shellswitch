@@ -531,6 +531,11 @@ pub fn switch(dir: &Path, c: &Candidate, session: &Session, all: &[Candidate]) -
                 || (r.candidate.name == x.name && r.candidate.lifecycle.is_some())
                 || s.installed
                     .get(&r.candidate.id)
+                    .or_else(|| {
+                        s.installed
+                            .values()
+                            .find(|managed| managed.name == r.candidate.name)
+                    })
                     .is_some_and(|managed| managed.name == x.name && managed.lifecycle.is_some())
         });
         let registered = s
