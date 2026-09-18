@@ -370,6 +370,11 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
             KeyCode::Char('r') => {
                 report = discovery::scan(&roots);
                 for c in lifecycle::registry(&dir)? {
+                    if c.lifecycle.is_some() {
+                        report
+                            .candidates
+                            .retain(|old| old.name != c.name || old.lifecycle.is_some());
+                    }
                     report.candidates.retain(|old| old.id != c.id);
                     report.candidates.push(c);
                 }

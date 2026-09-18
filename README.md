@@ -1,4 +1,4 @@
-# Shellswitch 0.2.11
+# Shellswitch 0.2.12
 
 Rust desktop-shell discovery and transactional lifecycle control, with a three-pane Ratatui interface inspired by Linutil. This version adds configuration ownership, inactive-shell gates, staged installs, rollback, and incident-specific Tonantzintla/Serpantinum bridges.
 
