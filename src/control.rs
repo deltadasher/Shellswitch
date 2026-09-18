@@ -526,28 +526,19 @@ pub fn switch(dir: &Path, c: &Candidate, session: &Session, all: &[Candidate]) -
     // Unknown findings are not kill targets. Explicit lifecycle registrations may
     // quiesce only their exact declared process matchers and service units.
     for x in observed.iter().filter(|x| !x.running_pids.is_empty()) {
-        let active_match = s.active.as_ref().is_some_and(|r| {
-            r.candidate.id == x.id
-                || (r.candidate.name == x.name && r.candidate.lifecycle.is_some())
-                || s.installed
-                    .get(&r.candidate.id)
-                    .or_else(|| {
-                        s.installed
-                            .values()
-                            .find(|managed| managed.name == r.candidate.name)
-                    })
-                    .is_some_and(|managed| managed.name == x.name && managed.lifecycle.is_some())
+        let covered = x.running_pids.iter().all(|pid| {
+            process::inspect(*pid).is_some_and(|p| {
+                s.active.as_ref().is_some_and(|r| {
+                    r.process
+                        .as_ref()
+                        .is_some_and(|id| process::owns(id, r.owned_group, &p))
+                }) || s
+                    .installed
+                    .values()
+                    .any(|c| lifecycle::declared(c, &p).is_some())
+            })
         });
-        let registered = s
-            .installed
-            .get(&x.id)
-            .or_else(|| s.installed.values().find(|c| c.name == x.name))
-            .is_some_and(|c| {
-                c.lifecycle
-                    .as_ref()
-                    .is_some_and(|l| !l.processes.is_empty() || !l.services.is_empty())
-            });
-        if !active_match && !registered {
+        if !covered {
             bail!(
                 "Unmanaged shell {} {:?}; adopt its exact PID or register a lifecycle adapter first",
                 x.name,

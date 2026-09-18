@@ -327,7 +327,7 @@ pub fn stop_commands(s: &mut State) -> Result<()> {
     s.commands.clear();
     Ok(())
 }
-fn declared<'a>(
+pub(crate) fn declared<'a>(
     c: &'a Candidate,
     p: &process::Process,
 ) -> Option<&'a crate::ownership::ProcessMatch> {
