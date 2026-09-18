@@ -100,7 +100,37 @@ pub fn install(dir: &Path, manifest: &Path, payload: Option<&Path>) -> Result<Ca
     c.source = version.join("shellswitch.toml");
     // Installing never executes upstream installers, rewrites shared config,
     // replaces public launchers, enables services, or changes selected state.
+    let replaced_ids: Vec<String> = s
+        .installed
+        .iter()
+        .filter(|(id, old)| {
+            *id != &c.id
+                && (old.name.eq_ignore_ascii_case(&c.name)
+                    || old.source == c.source
+                    || old.source.ends_with(&c.source))
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    for old_id in &replaced_ids {
+        s.installed.remove(old_id);
+        if s.selected.as_deref() == Some(old_id) {
+            s.selected = Some(c.id.clone());
+        }
+        if let Some(active) = &mut s.active
+            && active.candidate.id == *old_id
+        {
+            active.candidate = c.clone();
+        }
+    }
     s.installed.insert(c.id.clone(), c.clone());
+    // If this revision is already the active process, refresh its candidate
+    // metadata in place. Otherwise the registry would gain an adapter while
+    // the running state continued to carry the unmanaged pre-install copy.
+    if let Some(active) = &mut s.active
+        && active.candidate.id == c.id
+    {
+        active.candidate = c.clone();
+    }
     s.last_event = format!(
         "Staged {}. Selection and live configuration were not changed",
         c.name
