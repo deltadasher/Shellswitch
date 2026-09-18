@@ -470,8 +470,12 @@ pub fn plan(c: &Candidate, session: &Session, s: &State) -> Result<String> {
     if let Some(active) = &s.active
         && active.candidate.id != c.id
     {
+        let managed = active.candidate.lifecycle.is_some()
+            || s.installed
+                .get(&active.candidate.id)
+                .is_some_and(|candidate| candidate.lifecycle.is_some());
         ensure!(
-            active.candidate.lifecycle.is_some(),
+            managed,
             "The currently running shell is unmanaged. Register its lifecycle adapter before switching so its supervisor and respawn paths can be stopped"
         );
     }
@@ -522,13 +526,13 @@ pub fn switch(dir: &Path, c: &Candidate, session: &Session, all: &[Candidate]) -
     // Unknown findings are not kill targets. Explicit lifecycle registrations may
     // quiesce only their exact declared process matchers and service units.
     for x in observed.iter().filter(|x| !x.running_pids.is_empty()) {
-        if !s.active.as_ref().is_some_and(|r| r.candidate.id == x.id)
-            && !s
-                .installed
-                .get(&x.id)
-                .and_then(|c| c.lifecycle.as_ref())
+        let active_match = s.active.as_ref().is_some_and(|r| r.candidate.id == x.id);
+        let registered = s.installed.get(&x.id).is_some_and(|c| {
+            c.lifecycle
+                .as_ref()
                 .is_some_and(|l| !l.processes.is_empty() || !l.services.is_empty())
-        {
+        });
+        if !active_match && !registered {
             bail!(
                 "Unmanaged shell {} {:?}; adopt its exact PID or register a lifecycle adapter first",
                 x.name,
