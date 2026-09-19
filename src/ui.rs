@@ -450,6 +450,7 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
             KeyCode::PageDown => a.scroll = a.scroll.saturating_add(6),
             KeyCode::PageUp => a.scroll = a.scroll.saturating_sub(6),
             KeyCode::Char('r') => {
+                let selected_id = selected.map(|i| report.candidates[i].id.clone());
                 let mut scan_roots = roots.clone();
                 if automatic_roots {
                     scan_roots.extend(discovery::default_roots());
@@ -469,6 +470,15 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
                     report.candidates.push(c);
                 }
                 crate::process::annotate(&mut report.candidates);
+                let refreshed = filtered(&report, &a);
+                a.selected = selected_id
+                    .as_ref()
+                    .and_then(|id| {
+                        refreshed
+                            .iter()
+                            .position(|i| &report.candidates[*i].id == id)
+                    })
+                    .unwrap_or_else(|| a.selected.min(refreshed.len().saturating_sub(1)));
                 a.message = format!("Scan complete. {}", report.warnings.join("; "));
             }
             KeyCode::Enter => {
@@ -478,7 +488,13 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
                             pending_action = 's';
                             a.confirm = Some(plan);
                         }
-                        Err(e) => a.message = e.to_string(),
+                        Err(e) => {
+                            a.message = "Cannot switch; diagnostic opened.".into();
+                            a.confirm = Some(format!(
+                                "Cannot switch:\n\n{e:#}\n\nIf recovery is pending, close this dialog and press e to recover."
+                            ));
+                            a.diagnostic = true;
+                        }
                     };
                 }
             }
