@@ -27,6 +27,7 @@ struct App {
     message: String,
     confirm: Option<String>,
     diagnostic: bool,
+    profile_compositor: String,
 }
 impl Default for App {
     fn default() -> Self {
@@ -39,6 +40,7 @@ impl Default for App {
             message: "Discovery is read-only. Enter previews the exact switch plan.".into(),
             confirm: None,
             diagnostic: false,
+            profile_compositor: String::new(),
         }
     }
 }
@@ -54,6 +56,7 @@ fn filtered(report: &Report, a: &App) -> Vec<usize> {
                     2 => c.kind == Kind::Component,
                     3 => c.kind == Kind::Session,
                     4 => c.kind == Kind::Candidate,
+                    5 => c.kind == Kind::Shell,
                     _ => true,
                 }
         })
@@ -143,6 +146,7 @@ fn draw(f: &mut Frame, report: &Report, a: &App, state: &State) {
         "Components",
         "Sessions",
         "Needs review",
+        "Autostart",
     ];
     let items: Vec<_> = groups
         .iter()
@@ -196,7 +200,7 @@ fn draw(f: &mut Frame, report: &Report, a: &App, state: &State) {
         cols[1],
         &mut liststate,
     );
-    let detail = if let Some(i) = visible.get(a.selected) {
+    let mut detail = if let Some(i) = visible.get(a.selected) {
         let c = &report.candidates[*i];
         format!(
             "{}\n{} · {:?}\nID {}\n\nCOMPATIBILITY\n{}\n\nSOURCE\n{}\n\nDETECTION EVIDENCE\n{}\n\nLAUNCH BACKEND\n{}\n\nRUNNING PIDS\n{:?}\n\n{}",
@@ -226,6 +230,25 @@ fn draw(f: &mut Frame, report: &Report, a: &App, state: &State) {
     } else {
         "No matches. Clear your search, change collection, or add --root /path/to/shells.".into()
     };
+    if a.tab == 5 {
+        let saved = state
+            .autostart
+            .iter()
+            .map(|(compositor, id)| {
+                let name = state
+                    .installed
+                    .get(id)
+                    .map(|c| c.name.as_str())
+                    .unwrap_or(id);
+                format!("{compositor}: {name}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        detail = format!(
+            "AUTOSTART — {}\n\nLeft/Right: choose compositor\nUp/Down: choose shell\nEnter: save choice\nDelete: clear choice\n\nSaved choices:\n{}\n\nSaving does not switch the current desktop.\n\n{}",
+            a.profile_compositor, saved, detail
+        );
+    }
     f.render_widget(
         Paragraph::new(terminal_text(&detail))
             .wrap(Wrap { trim: false })
@@ -322,7 +345,10 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     terminal.clear()?;
-    let mut a = App::default();
+    let mut a = App {
+        profile_compositor: report.session.compositor.clone(),
+        ..App::default()
+    };
     let mut pending_action = 's';
     let automatic_roots = roots.iter().any(|p| p == &discovery::config_home());
     let mut last_scan = std::time::Instant::now();
@@ -426,16 +452,70 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
             }
             continue;
         }
+        if a.tab == 5 {
+            match key.code {
+                KeyCode::Left | KeyCode::Right => {
+                    let mut choices = vec![
+                        "niri".to_string(),
+                        "hyprland".into(),
+                        "sway".into(),
+                        report.session.compositor.clone(),
+                    ];
+                    choices.extend(state.autostart.keys().cloned());
+                    choices.extend(
+                        report
+                            .candidates
+                            .iter()
+                            .flat_map(|c| c.compositors.iter().cloned()),
+                    );
+                    choices.sort();
+                    choices.dedup();
+                    let current = choices
+                        .iter()
+                        .position(|c| c == &a.profile_compositor)
+                        .unwrap_or(0);
+                    let next = if key.code == KeyCode::Right {
+                        (current + 1) % choices.len()
+                    } else {
+                        (current + choices.len() - 1) % choices.len()
+                    };
+                    a.profile_compositor = choices[next].clone();
+                    a.scroll = 0;
+                    continue;
+                }
+                KeyCode::Enter | KeyCode::Delete => {
+                    let candidate = if key.code == KeyCode::Delete {
+                        None
+                    } else {
+                        selected.map(|i| &report.candidates[i])
+                    };
+                    if candidate.is_none() && key.code == KeyCode::Enter {
+                        continue;
+                    }
+                    match crate::profiles::configure(&dir, &a.profile_compositor, candidate) {
+                        Ok(()) => {
+                            a.message = "Autostart choice saved; current desktop unchanged.".into()
+                        }
+                        Err(e) => {
+                            a.confirm = Some(format!("Cannot save autostart:\n\n{e:#}"));
+                            a.diagnostic = true;
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => break,
             KeyCode::Char('/') => a.searching = true,
             KeyCode::Tab => {
-                a.tab = (a.tab + 1) % 5;
+                a.tab = (a.tab + 1) % 6;
                 a.selected = 0;
                 a.scroll = 0;
             }
             KeyCode::BackTab => {
-                a.tab = (a.tab + 4) % 5;
+                a.tab = (a.tab + 5) % 6;
                 a.selected = 0;
                 a.scroll = 0;
             }

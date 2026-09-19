@@ -1,3 +1,4 @@
+mod profiles;
 mod automatic;
 mod adapters;
 mod control;
@@ -35,6 +36,15 @@ struct Cli {
 enum Action {
     /// Interactive three-pane browser (default)
     Tui,
+    /// Launch the saved choice for the current compositor, or configure a choice.
+    Autostart {
+        #[arg(long)]
+        compositor: Option<String>,
+        #[arg(long)]
+        shell: Option<String>,
+        #[arg(long)]
+        clear: bool,
+    },
     /// Read-only discovery, with evidence and launch methods
     Scan {
         #[arg(long)]
@@ -366,6 +376,20 @@ fn main() -> Result<()> {
             .with_context(|| format!("No candidate {id:?}; run scan"))
     };
     match cli.command.unwrap_or(Action::Tui) {
+        Action::Autostart {
+            compositor,
+            shell,
+            clear,
+        } => {
+            let compositor = compositor.unwrap_or_else(model::Session::current_compositor);
+            if clear {
+                profiles::configure(&dir, &compositor, None)?;
+            } else if let Some(id) = shell {
+                profiles::configure(&dir, &compositor, Some(find(&id)?))?;
+            } else {
+                profiles::launch(&dir)?;
+            }
+        }
         Action::Scan { json } => {
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
