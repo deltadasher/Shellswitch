@@ -1,7 +1,6 @@
-# Shellswitch 0.2.13
+# Shellswitch
 
-Rust desktop-shell discovery and transactional lifecycle control, with a three-pane Ratatui interface inspired by Linutil. This version adds configuration ownership, inactive-shell gates, staged installs, rollback, and incident-specific Tonantzintla/Serpantinum bridges.
-
+Rust desktop-shell discovery and transactional lifecycle control, with a three-pane Ratatui interface inspired by Linutil.
 ## Install the command
 
 Download and extract the Linux x86_64 archive from the [0.2.5 release](https://github.com/deltadasher/Shellswitch/releases/tag/v0.2.5), then run:
@@ -24,13 +23,11 @@ shellswitch doctor
 shellswitch inventory
 ```
 
-**Development did not change the live desktop.** The included binary and Tonantzintla patch are tested deliverables, not an assertion that the installed desktop is already protected. Discovery runs a fresh bounded scan each time you open Shellswitch or run `scan`; it is not a one-time database. First review the startup inventory and integration gaps below.
-
 ## Transaction and ownership
 
 One persistent `selected` shell and one user-level flock serialize mutations. State defaults to `$XDG_STATE_HOME/shellswitch` (`~/.local/state/shellswitch`). All commands and hooks must use this same ownership domain. Do not create separate active state directories for the same desktop.
 
-A switch captures the previous selection, exact process identities, entrypoint bytes, permissions/symlinks and startup protections. It freezes referenced KDL files, validates the staged destination using `niri validate`, installs command/autostart/service gates, stops declared owned processes, atomically replaces the entrypoint, requests a Niri reload and waits for a fresh `ConfigLoaded` result. It then starts the destination and checks process survival and any adapter health command. `keep` commits after rechecking; failure, interruption or trial expiry restores the prior configuration and shell.
+A switch captures the previous selection, exact process identities, entrypoint bytes, permissions/symlinks and startup protections. It freezes referenced KDL files, validates the staged destination using whatever the compositor's validation command is, installs command/autostart/service gates, stops declared owned processes, atomically replaces the entrypoint, requests a compositor reload and waits for a fresh `ConfigLoaded` result. It then starts the destination and checks process survival and any adapter health command. `keep` commits after rechecking; failure, interruption or trial expiry restores the prior configuration and shell.
 
 The process supervisor waits for a durable launch ticket before executing shell code. A detached watchdog handles interrupted switches and the 20-second confirmation period. File-only operations have a separate recoverable journal. Recovery archives intervening external edits instead of discarding them. If recovery itself fails, its journal remains for `recover --yes`; this is not a guarantee against disk failure or arbitrary same-user interference.
 
@@ -42,8 +39,7 @@ shellswitch revert
 shellswitch recover --yes     # interrupted operation; safe to repeat
 ```
 
-Process survival and successful validation do not prove visual usability. Inspect the desktop before keeping the trial. Niri live reload requires `load-config-file --path` and `ConfigLoaded` event support (tested against the 26.04 interface using a fixture). `enroll --offline` is for fixtures/offline validation, not a verified live handoff.
-
+Process survival and successful validation do not prove visual usability. Inspect the desktop before keeping the trial.
 ## Install separately; preserve personal settings
 
 `install` copies a payload into a versioned package directory and records its manifest. It never starts the shell, rewrites Niri, replaces command gates, clears a hold, or selects the new revision. It is not a dependency package manager. Use `--payload` for pinned runtime code; without it only metadata/configuration is captured and referenced code remains mutable.
@@ -57,7 +53,7 @@ shellswitch protect --yes
 shellswitch plan SHELL_ID
 ```
 
-Keep the executable at a stable absolute path before protection/activation: generated gates and startup use that path. Enrolment snapshots configuration but leaves the live entrypoint unchanged. The user baseline should contain your own settings and bindings; review old shell startup commands and includes before adopting it. Shell-specific fragments must omit startup nodes: Shellswitch supplies `resume`. Shellswitch does not delete arbitrary personal startup commands from your baseline.
+Keep the executable at a stable absolute path before protection/activation: generated gates and startup use that path. Enrollment snapshots configuration but leaves the live entrypoint unchanged. The user baseline should contain your own settings and bindings; review old shell startup commands and includes before adopting it. Shell-specific fragments must omit startup nodes: Shellswitch supplies `resume`. Shellswitch does not delete arbitrary personal startup commands from your baseline.
 
 Conflict policy is mandatory:
 
