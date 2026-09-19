@@ -468,7 +468,7 @@ fn plan_mode(c: &Candidate, session: &Session, s: &State, restart: bool) -> Resu
         c.id
     );
     ensure!(
-        s.config.is_some(),
+        session.compositor != "niri" || s.config.is_some(),
         "Configuration ownership is not enrolled. Enroll the current Niri config first; otherwise its existing spawn-at-startup entries can resurrect the previous shell"
     );
     if let Some(active) = &s.active
@@ -575,7 +575,9 @@ fn switch_mode(
     }
     let (mut changes, next_protections) = lifecycle::protection_plan(&store.dir, &s, Some(&c.id))?;
     let mut next_config = s.config.clone();
-    if let Some(cfg) = &mut next_config {
+    if let Some(cfg) = &mut next_config
+        && session.compositor == "niri"
+    {
         let (expected, dependencies) = ownership::compose(dir, cfg, Some(c))?;
         ownership::validate_snapshot(dir, &expected)?;
         changes.push(Change {
@@ -654,7 +656,7 @@ fn switch_mode(
         phase(&store, &mut s, Phase::ConfigApplied)?;
         if let Some(cfg) = &s.config {
             ownership::validate(&cfg.target)?;
-            if cfg.live_reload {
+            if cfg.live_reload && session.compositor == "niri" {
                 crate::niri::reload(&cfg.target)?;
             }
         }
@@ -710,6 +712,7 @@ fn revert_locked(store: &Store, s: &mut State) -> Result<()> {
     lifecycle::reload_services(s)?;
     if let Some(cfg) = &s.config
         && cfg.live_reload
+        && Session::current_compositor() == "niri"
     {
         crate::niri::reload(&cfg.target)?;
     }
