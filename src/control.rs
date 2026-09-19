@@ -549,7 +549,7 @@ fn switch_mode(
     process::annotate(&mut observed);
     // Unknown findings are not kill targets. Explicit lifecycle registrations may
     // quiesce only their exact declared process matchers and service units.
-    for x in observed.iter().filter(|x| !x.running_pids.is_empty()) {
+    for x in observed.iter().filter(|x| competing_shell(x)) {
         let covered = x.running_pids.iter().all(|pid| {
             process::inspect(*pid).is_some_and(|p| {
                 s.active.as_ref().is_some_and(|r| {
@@ -636,7 +636,7 @@ fn switch_mode(
         let mut remaining = all.to_vec();
         process::annotate(&mut remaining);
         ensure!(
-            remaining.iter().all(|c| c.running_pids.is_empty()),
+            !remaining.iter().any(competing_shell),
             "A discovered shell is still running after the declared handoff; adapter process coverage is incomplete"
         );
         let config_changes: Vec<_> = s
@@ -887,5 +887,35 @@ pub fn watchdog(dir: &Path) -> Result<()> {
             }
             return Ok(());
         }
+    }
+}
+
+// Layer-surface library evidence alone is not desktop-shell identity. Shared
+// components remain visible in discovery but do not block a shell handoff.
+fn competing_shell(c: &Candidate) -> bool {
+    c.kind == Kind::Shell && !c.running_pids.is_empty()
+}
+
+#[cfg(test)]
+mod competing_tests {
+    use super::*;
+    #[test]
+    fn only_running_shells_block_handoff() {
+        let mut c = crate::discovery::base(
+            Path::new("/fixture/unknown-provider"),
+            "unknown-provider".into(),
+            "runtime library evidence",
+            Kind::Candidate,
+        );
+        c.running_pids = vec![123];
+        assert!(!competing_shell(&c));
+        c.kind = Kind::Component;
+        assert!(!competing_shell(&c));
+        c.kind = Kind::Session;
+        assert!(!competing_shell(&c));
+        c.kind = Kind::Shell;
+        assert!(competing_shell(&c));
+        c.running_pids.clear();
+        assert!(!competing_shell(&c));
     }
 }
