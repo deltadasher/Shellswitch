@@ -67,6 +67,9 @@ pub fn install(dir: &Path, manifest: &Path, payload: Option<&Path>) -> Result<Ca
                 *f = PathBuf::from(map(&f.to_string_lossy()));
             }
             for endpoint in &mut l.commands {
+                for a in &mut endpoint.native_argv {
+                    *a = map(a);
+                }
                 for route in &mut endpoint.routes {
                     for a in &mut route.argv {
                         *a = map(a);
@@ -517,7 +520,7 @@ pub fn disable(dir: &Path, id: &str) -> Result<()> {
     if dir.join("files-pending.json").exists() {
         drop(store);
         recover_files(dir)?;
-        return disable(dir, id);
+        return stop_selected(dir, id);
     }
     if s.pending.is_some() {
         drop(store);
@@ -602,14 +605,42 @@ pub fn authorize(dir: &Path, id: &str, purpose: &str) -> Result<()> {
     Ok(())
 }
 pub fn gate(dir: &Path, id: &str, entry: Option<&Path>, args: &[String]) -> Result<()> {
+    let default_start = vec!["start".to_string()];
+    let args = if args.is_empty()
+        && entry
+            .and_then(Path::file_name)
+            .is_some_and(|n| n == "serpantinumd")
+    {
+        default_start.as_slice()
+    } else {
+        args
+    };
     let store = Store::open(dir)?;
     let mut s = store.load()?;
-    // Introspection is always available, including for inactive shells.
-    if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") || args == ["help"] {
+    reconcile_active(&mut s)?;
+    store.save(&s)?;
+    let native_help = gate_allows(&s, id)
+        && s.active.as_ref().is_some_and(|r| {
+            r.candidate.lifecycle.as_ref().is_some_and(|l| {
+                l.commands.iter().any(|e| {
+                    entry.is_none_or(|p| e.path == p)
+                        && (!e.native_argv.is_empty()
+                            || (["tonantzintla-bridge-v1", "serpantinum-bridge-v1"]
+                                .contains(&l.adapter.as_str())
+                                && e.path.file_name().is_none_or(|n| n != "serpantinumd")))
+                })
+            })
+        });
+    // Inactive shells receive read-only managed help without executing native code.
+    if !native_help
+        && (args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") || args == ["help"])
+    {
         println!("{id}: Shellswitch-managed entrypoint");
-        println!("Lifecycle: start / session-start / run (resume selected shell); status");
         println!(
-            "Switch, stop, restart or update through Shellswitch to preserve rollback and ownership."
+            "Lifecycle: start / session-start / run (resume selected shell); restart; stop; status"
+        );
+        println!(
+            "Native runtime commands are delegated when the adapter provides a cooperative CLI. Installation and ownership changes require staging."
         );
         if let Some(c) = s.installed.get(id)
             && let Some(l) = &c.lifecycle
@@ -641,8 +672,31 @@ pub fn gate(dir: &Path, id: &str, entry: Option<&Path>, args: &[String]) -> Resu
         gate_allows(&s, id) && !dir.join("files-pending.json").exists(),
         "{id} is inactive, disabled, or undergoing handoff; select it explicitly in Shellswitch"
     );
+    let lifecycle_args = &args[args
+        .iter()
+        .take_while(|a| ["-v", "--verbose"].contains(&a.as_str()))
+        .count()..];
     control::check_config(&s)?;
-    if args
+    if lifecycle_args == ["stop"] || lifecycle_args == ["kill"] {
+        ensure!(
+            s.pending.is_none(),
+            "Finish or revert the trial before stopping"
+        );
+        drop(store);
+        return disable(dir, id);
+    }
+    if lifecycle_args == ["restart"] {
+        let candidate = s
+            .installed
+            .get(id)
+            .cloned()
+            .context("Missing registered shell")?;
+        drop(store);
+        control::restart(dir, &candidate)?;
+        println!("Selected shell restarted and verified.");
+        return Ok(());
+    }
+    if lifecycle_args
         .first()
         .is_some_and(|a| ["start", "session-start", "run"].contains(&a.as_str()))
     {
@@ -660,34 +714,24 @@ pub fn gate(dir: &Path, id: &str, entry: Option<&Path>, args: &[String]) -> Resu
         .iter()
         .find(|e| entry.is_none_or(|p| e.path == p))
         .context("Unknown CLI entrypoint")?;
-    let mut routes = endpoint.routes.clone();
-    if l.adapter == "tonantzintla-bridge-v1"
-        && let crate::model::Backend::Process { argv, .. } = &c.backend
-    {
-        for (name, tail) in [
-            ("lock", vec!["umbra", "lock"]),
-            ("preview-lock", vec!["umbra", "preview"]),
-            ("quick", vec!["quickactions", "toggle"]),
-        ] {
-            if !routes.iter().any(|r| r.prefix == [name]) {
-                let mut command = argv.clone();
-                command.extend(["ipc".into(), "call".into()]);
-                command.extend(tail.into_iter().map(str::to_owned));
-                routes.push(crate::ownership::Route {
-                    prefix: vec![name.into()],
-                    argv: command,
-                });
-            }
-        }
-    }
-
-    let route=routes.iter().filter(|r|args.starts_with(&r.prefix)).max_by_key(|r|r.prefix.len()).context("Unsupported command through managed gate; use Shellswitch install/switch/disable for lifecycle changes")?;
-    let mut argv = route.argv.clone();
-    argv.extend_from_slice(&args[route.prefix.len()..]);
-    if l.adapter == "tonantzintla-bridge-v1" && args == ["quick"] {
-        argv.push("telemetry".into());
-    }
-    normalize_widget_args(l.adapter.as_str(), &mut argv)?;
+    let native = crate::native::command(c, endpoint, args)?;
+    let native_mode = native.is_some();
+    let argv = if let Some(argv) = native {
+        argv
+    } else {
+        let route = endpoint
+            .routes
+            .iter()
+            .filter(|r| args.starts_with(&r.prefix))
+            .max_by_key(|r| r.prefix.len())
+            .context(
+                "This adapter has no native CLI contract for that command; see its managed help",
+            )?;
+        let mut argv = route.argv.clone();
+        argv.extend_from_slice(&args[route.prefix.len()..]);
+        normalize_widget_args(l.adapter.as_str(), &mut argv)?;
+        argv
+    };
     let lease = s.active.as_ref().unwrap().lease.clone();
     let ticket = dir.join("tickets").join(ownership::nonce()?);
     fs::create_dir_all(ticket.parent().unwrap())?;
@@ -702,7 +746,12 @@ pub fn gate(dir: &Path, id: &str, entry: Option<&Path>, args: &[String]) -> Resu
         .env("SHELLSWITCH_SHELL_ID", id)
         .env("SHELLSWITCH_HANDOFF", &lease)
         .env("SHELLSWITCH_GATED", "1")
-        .stdin(Stdio::null());
+        .env("SHELLSWITCH_EXECUTABLE", std::env::current_exe()?)
+        .env(
+            "SHELLSWITCH_NATIVE_CLI",
+            if native_mode { "1" } else { "0" },
+        )
+        .stdin(Stdio::inherit());
     unsafe {
         cmd.pre_exec(|| {
             if libc::setsid() < 0 {
@@ -1174,4 +1223,84 @@ mod gate_policy_tests {
         assert!(gate(&dir, "arbitrary", None, &["start".into()]).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
+}
+
+// Upgrade only when the old launch entrypoint exactly matches a registered
+// process declaration. Display names are never authority for this migration.
+fn reconcile_active(s: &mut State) -> Result<()> {
+    if s.pending.is_some() {
+        return Ok(());
+    }
+    let Some(active) = &s.active else {
+        return Ok(());
+    };
+    if active.candidate.lifecycle.is_some() {
+        return Ok(());
+    }
+    let Backend::Process { argv, .. } = &active.candidate.backend else {
+        return Ok(());
+    };
+    let entry = |args: &[String]| -> Option<PathBuf> {
+        let p = PathBuf::from(&args.windows(2).find(|w| w[0] == "-p")?[1]);
+        let p = if p.is_dir() { p.join("shell.qml") } else { p };
+        p.canonicalize().ok()
+    };
+    let Some(old_entry) = entry(argv) else {
+        return Ok(());
+    };
+    let matches: Vec<_> = s
+        .installed
+        .values()
+        .filter(|c| {
+            c.lifecycle.as_ref().is_some_and(|l| {
+                l.processes
+                    .iter()
+                    .any(|p| entry(&p.argv_prefix).as_ref() == Some(&old_entry))
+            })
+        })
+        .cloned()
+        .collect();
+    if matches.len() != 1 {
+        return Ok(());
+    }
+    let c = &matches[0];
+    let old = active.candidate.id.clone();
+    ensure!(
+        !s.disabled.contains(&old) && !s.disabled.contains(&c.id),
+        "Shell is emergency-disabled"
+    );
+    if s.selected.as_deref() == Some(&old) {
+        s.selected = Some(c.id.clone());
+    }
+    if let Some(config) = &mut s.config
+        && config.owner.as_deref() == Some(&old)
+    {
+        config.owner = Some(c.id.clone());
+    }
+    let running = s.active.as_mut().unwrap();
+    let backend = running.candidate.backend.clone();
+    running.candidate = c.clone();
+    running.candidate.backend = backend;
+    if old != c.id {
+        s.installed.remove(&old);
+    }
+    s.last_event = "Reconciled legacy entrypoint with its registered lifecycle adapter".into();
+    Ok(())
+}
+
+fn stop_selected(dir: &Path, id: &str) -> Result<()> {
+    let store = Store::open(dir)?;
+    let mut s = store.load()?;
+    ensure!(
+        s.pending.is_none() && s.selected.as_deref() == Some(id),
+        "Only the selected shell may stop"
+    );
+    stop_commands(&mut s)?;
+    if let Some(active) = &s.active {
+        control::stop(active)?;
+    }
+    // Keep selection and gates so a later explicit start can resume.
+    s.active = None;
+    s.last_event = format!("Stopped {id}; selection retained for explicit start");
+    store.save(&s)
 }

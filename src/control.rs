@@ -452,6 +452,9 @@ pub(crate) fn check_config(s: &State) -> Result<()> {
     Ok(())
 }
 pub fn plan(c: &Candidate, session: &Session, s: &State) -> Result<String> {
+    plan_mode(c, session, s, false)
+}
+fn plan_mode(c: &Candidate, session: &Session, s: &State, restart: bool) -> Result<String> {
     session.compatibility(c).map_err(anyhow::Error::msg)?;
     guarded(c)?;
     ensure!(
@@ -481,9 +484,10 @@ pub fn plan(c: &Candidate, session: &Session, s: &State) -> Result<String> {
         );
     }
     ensure!(
-        !s.active.as_ref().is_some_and(|r| r.candidate.id == c.id
-            && r.candidate.source == c.source
-            && healthy(r)),
+        restart
+            || !s.active.as_ref().is_some_and(|r| r.candidate.id == c.id
+                && r.candidate.source == c.source
+                && healthy(r)),
         "Already active; stage an update before switching to a new revision"
     );
     check_config(s)?;
@@ -518,10 +522,29 @@ fn watchdog_spawn(dir: &Path) -> Result<()> {
     Ok(())
 }
 pub fn switch(dir: &Path, c: &Candidate, session: &Session, all: &[Candidate]) -> Result<()> {
+    switch_mode(dir, c, session, all, false)
+}
+pub fn restart(dir: &Path, c: &Candidate) -> Result<()> {
+    switch_mode(dir, c, &Session::detect(), &[], true)?;
+    keep(dir)
+}
+fn switch_mode(
+    dir: &Path,
+    c: &Candidate,
+    session: &Session,
+    all: &[Candidate],
+    restart: bool,
+) -> Result<()> {
     let store = Store::open(dir)?;
     store.mutation_ready()?;
     let mut s = store.load()?;
-    plan(c, session, &s)?;
+    if restart {
+        ensure!(
+            s.selected.as_deref() == Some(c.id.as_str()),
+            "Only the selected shell may restart"
+        );
+    }
+    plan_mode(c, session, &s, restart)?;
     let mut observed = all.to_vec();
     process::annotate(&mut observed);
     // Unknown findings are not kill targets. Explicit lifecycle registrations may

@@ -120,6 +120,8 @@ pub fn generate(kind: &str, root: &Path, fragment: Option<&Path>) -> Result<Stri
             .into_iter()
             .map(|alias| CommandGate {
                 path: bin.join(alias),
+                native_argv: vec![],
+                blocked_prefixes: vec![],
                 routes: if alias == "serpantinumd" {
                     vec![]
                 } else {

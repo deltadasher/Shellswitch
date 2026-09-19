@@ -72,6 +72,12 @@ pub struct Lifecycle {
 #[serde(deny_unknown_fields)]
 pub struct CommandGate {
     pub path: PathBuf,
+    /// Explicit cooperative native CLI. Empty retains legacy IPC routes.
+    #[serde(default)]
+    pub native_argv: Vec<String>,
+    /// Native commands that must remain outside a runtime lease.
+    #[serde(default)]
+    pub blocked_prefixes: Vec<Vec<String>>,
     #[serde(default)]
     pub routes: Vec<Route>,
 }

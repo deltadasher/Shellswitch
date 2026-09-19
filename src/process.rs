@@ -343,6 +343,14 @@ pub fn supervise(argv: &[String], ticket: Option<&std::path::Path>) -> Result<()
         }
         std::thread::sleep(Duration::from_millis(50));
     };
+    // Native CLI commands may intentionally launch a terminal, browser or
+    // lock surface. Successful completion must not kill those applications.
+    if result.is_ok()
+        && !STOP_REQUESTED.load(Ordering::Relaxed)
+        && std::env::var("SHELLSWITCH_NATIVE_CLI").as_deref() == Ok("1")
+    {
+        return result;
+    }
     // All members still share our live group identity. Escaping setsid/double-fork
     // daemons are intentionally unsupported; declare their real service instead.
     let members: Vec<_> = all()

@@ -4,6 +4,7 @@ mod discovery;
 mod generic;
 mod lifecycle;
 mod model;
+mod native;
 mod niri;
 mod ownership;
 mod process;
@@ -331,7 +332,7 @@ fn main() -> Result<()> {
         if c.lifecycle.is_some() {
             report
                 .candidates
-                .retain(|x| x.name != c.name || x.lifecycle.is_some());
+                .retain(|x| !x.name.eq_ignore_ascii_case(&c.name) || x.lifecycle.is_some());
         }
         report.candidates.retain(|x| x.id != c.id);
         report.candidates.push(c);
