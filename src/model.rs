@@ -62,6 +62,14 @@ pub struct Session {
     pub evidence: Vec<String>,
 }
 impl Session {
+    pub fn current_compositor() -> String {
+        compositor_hint(
+            &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
+            std::env::var_os("NIRI_SOCKET").is_some(),
+            std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
+            std::env::var_os("SWAYSOCK").is_some(),
+        )
+    }
     pub fn detect() -> Self {
         let env = |key| std::env::var(key).unwrap_or_default();
         let protocol = if !env("WAYLAND_DISPLAY").is_empty() {
@@ -76,27 +84,8 @@ impl Session {
             "XDG_CURRENT_DESKTOP={}",
             env("XDG_CURRENT_DESKTOP")
         )];
-        let compositor = [
-            ("NIRI_SOCKET", "niri"),
-            ("HYPRLAND_INSTANCE_SIGNATURE", "hyprland"),
-            ("SWAYSOCK", "sway"),
-        ]
-        .into_iter()
-        .find_map(|(key, value)| {
-            if !env(key).is_empty() {
-                evidence.push(format!("{key} present"));
-                Some(value.to_owned())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| {
-            env("XDG_CURRENT_DESKTOP")
-                .split(':')
-                .next()
-                .unwrap_or_default()
-                .to_lowercase()
-        });
+        let compositor = Self::current_compositor();
+        evidence.push(format!("Compositor routing: {compositor}"));
         let globals = if protocol == "wayland" {
             match crate::wayland::probe() {
                 Ok(g) => {
@@ -184,4 +173,37 @@ pub fn executable(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .map(|p| p.join(name))
         .find(valid)
+}
+
+// An inherited socket variable from a previous desktop must not override the
+// explicitly named current desktop.
+fn compositor_hint(desktop: &str, niri: bool, hypr: bool, sway: bool) -> String {
+    let lower = desktop.to_lowercase();
+    if let Some(name) = lower
+        .split(':')
+        .find(|v| ["hyprland", "niri", "sway", "gnome", "kde"].contains(v))
+    {
+        return name.into();
+    }
+    if hypr {
+        "hyprland".into()
+    } else if niri {
+        "niri".into()
+    } else if sway {
+        "sway".into()
+    } else {
+        lower.split(':').next().unwrap_or("").into()
+    }
+}
+
+#[cfg(test)]
+mod compositor_tests {
+    use super::*;
+    #[test]
+    fn current_desktop_overrides_inherited_foreign_socket() {
+        assert_eq!(compositor_hint("Hyprland", true, true, false), "hyprland");
+        assert_eq!(compositor_hint("niri", true, true, false), "niri");
+        assert_eq!(compositor_hint("", false, true, false), "hyprland");
+        assert_eq!(compositor_hint("GNOME", true, false, false), "gnome");
+    }
 }
