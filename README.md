@@ -1,4 +1,4 @@
-# Shellswitch 0.2.12
+# Shellswitch 0.2.13
 
 Rust desktop-shell discovery and transactional lifecycle control, with a three-pane Ratatui interface inspired by Linutil. This version adds configuration ownership, inactive-shell gates, staged installs, rollback, and incident-specific Tonantzintla/Serpantinum bridges.
 
@@ -170,17 +170,42 @@ Core code: `control.rs` (journal/transactions), `ownership.rs` (snapshots/KDL), 
 
 Shellswitch core is MIT. The separate Tonantzintla integration patch modifies GPL-3.0-or-later upstream code and is supplied under that license; it is not a relicensing of Tonantzintla.
 
-### Managed command compatibility
+### Native command compatibility
 
-Protected CLI entrypoints provide managed help (including no arguments), status,
-and start/session-start/run for the selected shell. They do not run a competing
-native daemon. Registered runtime routes work during the destination's trial;
-inactive shells and emergency-held shells cannot use those routes. Commands
-receive the selected adapter's runtime environment.
+The selected shell's native CLI handles ordinary commands, argument parsing,
+defaults, help and future subcommands. Tonantzintla's blackhole delegates to the
+selected runtime; Serpantinum delegates through a sibling copy of its CLI with
+a checked daemon guard. The original CLI file is preserved. Its ensure_daemon
+hook validates the active lease rather than launching another supervisor.
 
-CLI compatibility is explicit, not inferred from arbitrary command names.
-Unmapped commands remain rejected. In particular, installation, updates, native
-restart, and configuration ownership operations must not silently pass through
-to upstream launchers. Tonantzintla additionally maps lock, preview-lock and quick
-actions directly to its IPC. Native daemon internals are not reproduced.
-These guarantees cover managed entrypoints, not programs bypassing them.
+Start/session-start/run, stop, restart and status use managed lifecycle semantics.
+Restart is a transaction with validation and rollback; successful verification
+commits it. Stop retains selection so explicit start works. Emergency disable
+remains a separate persistent hold. Serpantinumd with no arguments means managed
+start; it does not start a competing native supervisor. Native daemon internals
+are not reproduced.
+
+Other cooperative shells can opt in without a command whitelist:
+```toml
+[[lifecycle.commands]]
+path = "/absolute/path/to/public-cli"
+native_argv = ["/absolute/path/to/cooperative-native-cli"]
+blocked_prefixes = [["install"], ["update"]]
+```
+The native executable must cooperate with Shellswitch's activation/runtime lease
+and avoid starting independent supervisors. Do not point native_argv back to its
+public gated path. Legacy IPC routes remain supported when no native CLI contract
+is provided. Unknown CLIs are not automatically authorized to launch daemons.
+
+Native commands inherit runtime paths and their terminal input. Successful CLI
+completion does not terminate applications it intentionally launched. Ordinary
+controls work during the destination's trial, while inactive shells remain gated.
+Updates and shared configuration ownership changes require staged integration;
+the built-in bridges reject native install/update/sync/uninstall and Niri ownership
+mutations. Direct third-party programs can bypass these gates as the same user;
+this is lifecycle coordination, not a security boundary.
+
+Tests use isolated state and fake native CLIs, including unknown subcommands,
+literal arguments, inactive gates, daemon-guard authorization and legacy identity
+reconciliation. Full visual behavior and all native daemon internals are not
+covered by these fixtures.

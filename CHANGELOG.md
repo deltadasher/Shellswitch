@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.13
+
+- Delegate ordinary commands to cooperative native CLIs rather than maintaining a command whitelist.
+- Preserve Tonantzintla native argument parsing and Serpantinum controls with an authorized daemon guard.
+- Coordinate restart/stop/start through managed lifecycle operations; retain inactive-shell gating.
+- Reconcile legacy selection by declared entrypoint and preserve the actual running backend.
+- Add native CLI fixtures for unknown commands, literal arguments, inactive gates and identity migration.
+
 ## 0.2.12
 
 - Prefer a single installed lifecycle-adapted candidate when discovery and the registry expose the same shell name.
