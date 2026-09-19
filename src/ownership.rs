@@ -72,6 +72,11 @@ pub struct Lifecycle {
 #[serde(deny_unknown_fields)]
 pub struct CommandGate {
     pub path: PathBuf,
+    /// Reviewed launcher body; executed only after lease validation.
+    #[serde(default)]
+    pub inline_body: Option<String>,
+    #[serde(default)]
+    pub inline_original: Option<String>,
     /// Explicit cooperative native CLI. Empty retains legacy IPC routes.
     #[serde(default)]
     pub native_argv: Vec<String>,

@@ -234,7 +234,7 @@ pub fn protection_plan(
         };
         integrated = true;
         for gate in &l.commands {
-            let script = format!(
+            let mut script = format!(
                 "#!/bin/sh\n# Shellswitch managed gate: {}\nexec {} --state-dir {} gate {} --entry {} -- \"$@\"\n",
                 c.id,
                 quote(&exe.to_string_lossy()),
@@ -242,6 +242,32 @@ pub fn protection_plan(
                 quote(&c.id),
                 quote(&gate.path.to_string_lossy())
             );
+            if let Some(body) = &gate.inline_body {
+                let unchanged =
+                    if let Some(saved) = s.protections.iter().find(|f| f.path == gate.path) {
+                        ownership::read(&gate.path)? == saved.expected
+                    } else {
+                        gate.inline_original.as_ref().is_some_and(|original| {
+                            fs::read_to_string(&gate.path).ok().as_ref() == Some(original)
+                        })
+                    };
+                ensure!(
+                    unchanged,
+                    "Launcher changed since registration: {}; review before switching",
+                    gate.path.display()
+                );
+                script = format!(
+                    "#!/bin/bash\n# Shellswitch cooperative launcher\nif [ \"$SHELLSWITCH_GATED\" != 1 ]; then\n exec {} --state-dir {} gate {} --entry {} -- \"$@\"\nfi\n{} --state-dir {} authorize {} --purpose runtime || exit $?\n{}",
+                    quote(&exe.to_string_lossy()),
+                    quote(&dir.to_string_lossy()),
+                    quote(&c.id),
+                    quote(&gate.path.to_string_lossy()),
+                    quote(&exe.to_string_lossy()),
+                    quote(&dir.to_string_lossy()),
+                    quote(&c.id),
+                    body
+                );
+            }
             desired(
                 &mut map,
                 &gate.path,

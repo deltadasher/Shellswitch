@@ -6,8 +6,10 @@ use crate::{
 };
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    cursor::Show,
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
+    style::{Attribute, ResetColor, SetAttribute},
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{backend::TestBackend, prelude::*, widgets::*};
@@ -24,6 +26,7 @@ struct App {
     scroll: u16,
     message: String,
     confirm: Option<String>,
+    diagnostic: bool,
 }
 impl Default for App {
     fn default() -> Self {
@@ -35,6 +38,7 @@ impl Default for App {
             scroll: 0,
             message: "Discovery is read-only. Enter previews the exact switch plan.".into(),
             confirm: None,
+            diagnostic: false,
         }
     }
 }
@@ -223,7 +227,7 @@ fn draw(f: &mut Frame, report: &Report, a: &App, state: &State) {
         "No matches. Clear your search, change collection, or add --root /path/to/shells.".into()
     };
     f.render_widget(
-        Paragraph::new(detail)
+        Paragraph::new(terminal_text(&detail))
             .wrap(Wrap { trim: false })
             .scroll((a.scroll, 0))
             .block(block(" INSPECT · PgUp / PgDn ")),
@@ -237,7 +241,7 @@ fn draw(f: &mut Frame, report: &Report, a: &App, state: &State) {
     } else {
         a.message.clone()
     };
-    f.render_widget(Paragraph::new(vec![Line::from(Span::styled(status,Style::default().fg(GOLD))),Line::from(Span::styled("↑↓ select  Tab group  / search  Enter plan  x disable  l release  d doctor  f repair  e recover  r scan  q quit",Style::default().fg(MUTED)))]).wrap(Wrap{trim:true}).block(block(" CONTROL ")),vertical[3]);
+    f.render_widget(Paragraph::new(vec![Line::from(Span::styled(terminal_text(&status),Style::default().fg(GOLD))),Line::from(Span::styled("↑↓ select  Tab group  / search  Enter plan  x disable  l release  d doctor  f repair  e recover  r scan  Ctrl+L redraw  q quit",Style::default().fg(MUTED)))]).wrap(Wrap{trim:true}).block(block(" CONTROL ")),vertical[3]);
     if let Some(text) = &a.confirm {
         let area = Rect::new(
             f.area().x + 5,
@@ -247,19 +251,69 @@ fn draw(f: &mut Frame, report: &Report, a: &App, state: &State) {
         );
         f.render_widget(Clear, area);
         f.render_widget(
-            Paragraph::new(format!("{text}\n\n[y] Confirm    [Esc] Cancel"))
-                .wrap(Wrap { trim: false })
-                .block(block(" REVIEW ACTION ").border_style(Style::default().fg(GOLD)))
-                .style(Style::default().bg(BG)),
+            Paragraph::new(format!(
+                "{}\n\n{}",
+                terminal_text(text),
+                if a.diagnostic {
+                    "[Esc] Close    [Ctrl+L] Redraw"
+                } else {
+                    "[y] Confirm    [Esc] Cancel"
+                }
+            ))
+            .wrap(Wrap { trim: false })
+            .block(block(" REVIEW ACTION ").border_style(Style::default().fg(GOLD)))
+            .style(Style::default().bg(BG)),
             area,
         );
     }
 }
+/// Backend diagnostics are text, not terminal instructions.
+fn terminal_text(input: &str) -> String {
+    let mut out = String::new();
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => match chars.next() {
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') | Some('P') | Some('_') | Some('^') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' || c == '\u{009c}' {
+                            break;
+                        }
+                        if c == '\x1b' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            '\n' => out.push('\n'),
+            '\t' => out.push_str("    "),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 struct Cleanup;
 impl Drop for Cleanup {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(
+            io::stdout(),
+            ResetColor,
+            SetAttribute(Attribute::Reset),
+            Show,
+            LeaveAlternateScreen
+        );
     }
 }
 pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> {
@@ -267,6 +321,7 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
     let _cleanup = Cleanup;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    terminal.clear()?;
     let mut a = App::default();
     let mut pending_action = 's';
     let automatic_roots = roots.iter().any(|p| p == &discovery::config_home());
@@ -279,6 +334,7 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
         terminal.draw(|f| draw(f, &report, &a, &state))?;
         let refresh_due = last_scan.elapsed() >= Duration::from_secs(5)
             && a.confirm.is_none()
+            && !a.searching
             && state.pending.is_none();
         let key = if refresh_due {
             crossterm::event::KeyEvent::new(
@@ -289,12 +345,21 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
             if !event::poll(Duration::from_millis(200))? {
                 continue;
             }
-            let Event::Key(key) = event::read()? else {
-                continue;
-            };
-            key
+            match event::read()? {
+                Event::Key(key) => key,
+                Event::Resize(_, _) => {
+                    terminal.autoresize()?;
+                    terminal.clear()?;
+                    continue;
+                }
+                _ => continue,
+            }
         };
         if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        if key.code == KeyCode::Char('l') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            terminal.clear()?;
             continue;
         }
         if a.searching {
@@ -315,9 +380,11 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
         if a.confirm.is_some() {
             if key.code == KeyCode::Esc {
                 a.confirm = None;
+                a.diagnostic = false;
+                terminal.clear()?;
                 continue;
             }
-            if key.code == KeyCode::Char('y') {
+            if key.code == KeyCode::Char('y') && !a.diagnostic {
                 a.confirm = None;
                 let result = match (pending_action, selected) {
                     ('s', Some(i)) => control::switch(
@@ -350,10 +417,12 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
                             "Action failed:\n\n{e:#}\n\nPress Esc to close this diagnostic."
                         );
                         a.confirm = Some(detail);
+                        a.diagnostic = true;
                         "Action failed; diagnostic opened.".into()
                     }
                 };
                 crate::process::annotate(&mut report.candidates);
+                terminal.clear()?;
             }
             continue;
         }
@@ -388,6 +457,7 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
                 scan_roots.sort();
                 scan_roots.dedup();
                 report = discovery::scan(&scan_roots);
+                crate::automatic::register(&dir, &report.candidates)?;
                 last_scan = std::time::Instant::now();
                 for c in lifecycle::registry(&dir)? {
                     if c.lifecycle.is_some() {
@@ -445,6 +515,7 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
             KeyCode::Char('d') => {
                 let findings = lifecycle::diagnostics(&dir, &state);
                 pending_action = 'd';
+                a.diagnostic = true;
                 a.confirm = Some(if findings.is_empty() {
                     "No detected ownership or lifecycle drift.".into()
                 } else {
@@ -466,12 +537,14 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
             KeyCode::Char('k') => {
                 a.message = control::keep(&dir)
                     .map(|_| "Trial kept".into())
-                    .unwrap_or_else(|e| e.to_string())
+                    .unwrap_or_else(|e| e.to_string());
+                terminal.clear()?;
             }
             KeyCode::Char('u') => {
                 a.message = control::revert(&dir)
                     .map(|_| "Previous shell restored".into())
-                    .unwrap_or_else(|e| e.to_string())
+                    .unwrap_or_else(|e| e.to_string());
+                terminal.clear()?;
             }
             _ => {}
         }
@@ -538,6 +611,52 @@ pub fn snapshot_svg(report: &Report) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn diagnostics_cannot_execute_terminal_controls() {
+        assert_eq!(
+            terminal_text("\x1b[31mFailure\x1b[0m\r\nnext\x1b[2J"),
+            "Failure\nnext"
+        );
+        assert_eq!(
+            terminal_text("before\x1b]0;window title\x07after"),
+            "beforeafter"
+        );
+        assert_eq!(
+            terminal_text("a\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\b"),
+            "alinkb"
+        );
+        assert_eq!(terminal_text("Δ\ttext"), "Δ    text");
+    }
+    #[test]
+    fn diagnostic_overlay_renders_across_resize() {
+        let report = Report {
+            session: crate::model::Session {
+                protocol: "wayland".into(),
+                compositor: "niri".into(),
+                globals: None,
+                evidence: vec![],
+            },
+            candidates: vec![],
+            warnings: vec![],
+            files_visited: 0,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let app = App {
+            confirm: Some("Error: \x1b[2Jcolored output".into()),
+            diagnostic: true,
+            ..App::default()
+        };
+        for (width, height) in [(100, 30), (50, 10), (120, 40)] {
+            terminal.backend_mut().resize(width, height);
+            terminal.resize(Rect::new(0, 0, width, height)).unwrap();
+            terminal
+                .draw(|f| draw(f, &report, &app, &State::default()))
+                .unwrap();
+            for cell in &terminal.backend().buffer().content {
+                assert!(!cell.symbol().contains('\x1b'));
+            }
+        }
+    }
     #[test]
     fn empty_tui_renders() {
         let r = Report {
