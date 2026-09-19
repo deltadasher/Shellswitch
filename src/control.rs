@@ -78,6 +78,8 @@ pub struct State {
     pub commands: Vec<Running>,
     #[serde(default)]
     pub generation: u64,
+    #[serde(default)]
+    pub autostart: BTreeMap<String, String>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -93,6 +95,7 @@ impl Default for State {
             protections: vec![],
             commands: vec![],
             generation: 0,
+            autostart: BTreeMap::new(),
         }
     }
 }
@@ -473,6 +476,7 @@ fn plan_mode(c: &Candidate, session: &Session, s: &State, restart: bool) -> Resu
     );
     if let Some(active) = &s.active
         && active.candidate.id != c.id
+        && healthy(active)
     {
         let managed = active.candidate.lifecycle.is_some()
             || s.installed
@@ -538,6 +542,17 @@ fn switch_mode(
     let store = Store::open(dir)?;
     store.mutation_ready()?;
     let mut s = store.load()?;
+    if let Some(active) = &s.active {
+        if !healthy(active) {
+            // A dead process from the previous compositor is not a rollback target.
+            s.active = None;
+        } else if let Some(pid) = &active.process {
+            ensure!(
+                process::same_session(pid.pid),
+                "A shell is active in another session; refusing to stop it"
+            );
+        }
+    }
     if restart {
         ensure!(
             s.selected.as_deref() == Some(c.id.as_str()),
@@ -829,7 +844,9 @@ pub fn auto_adopt(dir: &Path, candidates: &[Candidate]) -> Result<Option<String>
     if state.pending.is_some() || state.active.as_ref().is_some_and(healthy) {
         return Ok(None);
     }
-    let matches: Vec<_> = candidates
+    let mut fresh = candidates.to_vec();
+    process::annotate(&mut fresh);
+    let matches: Vec<_> = fresh
         .iter()
         .filter(|c| c.kind == crate::model::Kind::Shell)
         .filter(|c| matches!(c.backend, Backend::Process { .. }))
@@ -840,13 +857,20 @@ pub fn auto_adopt(dir: &Path, candidates: &[Candidate]) -> Result<Option<String>
     }
     let c = matches[0];
     drop(store);
-    adopt(dir, c, c.running_pids.first().copied())?;
+    if let Err(error) = adopt(dir, c, c.running_pids.first().copied()) {
+        return Ok(Some(format!(
+            "Automatic adoption skipped: {error}. Open the shell details to inspect it."
+        )));
+    }
     Ok(Some(format!(
         "Automatically adopted {} PID {}",
         c.name, c.running_pids[0]
     )))
 }
 pub fn resume(dir: &Path, requested: Option<&str>) -> Result<()> {
+    if requested.is_none() && !Store::open(dir)?.load()?.autostart.is_empty() {
+        return crate::profiles::launch(dir);
+    }
     let store = Store::open(dir)?;
     store.mutation_ready()?;
     let s = store.load()?;
