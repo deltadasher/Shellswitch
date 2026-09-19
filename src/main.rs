@@ -1,3 +1,4 @@
+mod automatic;
 mod adapters;
 mod control;
 mod discovery;
@@ -326,6 +327,7 @@ fn main() -> Result<()> {
         bail!("No scan roots; provide --root with --isolated");
     }
     let mut report = discovery::scan(&roots);
+    automatic::register(&dir, &report.candidates)?;
     // Installed revisions take precedence over mutable discovery results.
     let installed = lifecycle::registry(&dir)?;
     for c in installed {
