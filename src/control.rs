@@ -724,7 +724,17 @@ fn revert_locked(store: &Store, s: &mut State) -> Result<()> {
         s.pending.as_mut().unwrap().target = previous.candidate.clone();
         s.pending.as_mut().unwrap().token = lease.clone();
         phase(store, s, Phase::Starting)?;
-        prepare_launch(&previous.candidate, store, s, &lease)?;
+        if let Some(identity) = surviving_instance(&previous.candidate)? {
+            s.active = Some(Running {
+                candidate: previous.candidate.clone(),
+                process: Some(identity),
+                owned_group: false,
+                lease,
+            });
+            store.save(s)?;
+        } else {
+            prepare_launch(&previous.candidate, store, s, &lease)?;
+        }
         wait_ready(s.active.as_ref().unwrap())?;
     }
     check_config(s)?;
@@ -920,5 +930,60 @@ mod competing_tests {
         assert!(competing_shell(&c));
         c.running_pids.clear();
         assert!(!competing_shell(&c));
+    }
+}
+
+// Recovery must account for a previous shell that survived or was relaunched
+// externally while rollback was blocked. Never blindly launch a second copy.
+fn surviving_instance(c: &Candidate) -> Result<Option<Identity>> {
+    if !matches!(c.backend, Backend::Process { .. }) {
+        return Ok(None);
+    }
+    let matches: Vec<_> = process::all()
+        .into_iter()
+        .filter(|p| process::matches(c, p) && process::alive(&p.identity))
+        .collect();
+    ensure!(
+        matches.len() <= 1,
+        "Multiple previous-shell instances remain; recovery will not launch another"
+    );
+    matches
+        .first()
+        .map(|p| process::adoptable(c, p.identity.pid))
+        .transpose()
+}
+
+#[cfg(test)]
+mod surviving_tests {
+    use super::*;
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    #[test]
+    fn recovery_recognizes_survivor_and_refuses_multiple_instances() {
+        let argv = vec!["/bin/sleep".to_string(), "92.17347".to_string()];
+        let mut c = crate::discovery::base(
+            Path::new("/fixture/survivor"),
+            "fixture".into(),
+            "manifest",
+            Kind::Shell,
+        );
+        c.backend = Backend::Process {
+            argv: argv.clone(),
+            cwd: PathBuf::from("/tmp"),
+        };
+        let first = Child(Command::new(&argv[0]).arg(&argv[1]).spawn().unwrap());
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(surviving_instance(&c).unwrap().unwrap().pid, first.0.id());
+        let second = Child(Command::new(&argv[0]).arg(&argv[1]).spawn().unwrap());
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(surviving_instance(&c).is_err());
+        drop(second);
+        drop(first);
+        assert!(surviving_instance(&c).unwrap().is_none());
     }
 }
