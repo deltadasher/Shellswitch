@@ -1,8 +1,8 @@
-mod profiles;
-mod automatic;
 mod adapters;
+mod automatic;
 mod control;
 mod discovery;
+mod experience;
 mod generic;
 mod lifecycle;
 mod model;
@@ -10,6 +10,7 @@ mod native;
 mod niri;
 mod ownership;
 mod process;
+mod profiles;
 mod ui;
 mod wayland;
 use anyhow::{Context, Result, bail};
@@ -57,12 +58,24 @@ enum Action {
     /// Start a 20-second trial; use keep to commit or revert to restore
     Switch {
         id: String,
+        /// Stage remembered source changes before starting the rollback-capable trial
+        #[arg(long)]
+        refresh: bool,
         #[arg(long)]
         yes: bool,
     },
     /// Stage/register a revision without changing configuration or starting it
     Install {
         manifest: PathBuf,
+        #[arg(long)]
+        payload: Option<PathBuf>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Restage a registered shell from its remembered source; does not activate
+    Refresh {
+        id: String,
+        /// Rebind the payload source to an editable checkout
         #[arg(long)]
         payload: Option<PathBuf>,
         #[arg(long)]
@@ -173,7 +186,19 @@ enum Action {
         #[arg(long)]
         yes: bool,
     },
-    Status,
+    /// Print state JSON, or a concise explanation with --human
+    Status {
+        #[arg(long)]
+        human: bool,
+    },
+    /// Explain setup, switching, updates and recovery without activating anything
+    Guide,
+    /// Stage local source changes and trial them (defaults to the selected shell)
+    Update {
+        id: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
     /// Print a manifest scaffold; save as shellswitch.toml beside your shell
     Template,
     /// Print an editable manifest for any discovered candidate (does not execute it)
@@ -211,6 +236,15 @@ fn main() -> Result<()> {
         std::env::current_dir()?.join(dir)
     };
     match &cli.command {
+        Some(Action::Refresh { id, payload, yes }) => {
+            confirmed(*yes)?;
+            let c = lifecycle::refresh(&dir, id, payload.as_deref())?;
+            println!(
+                "Refreshed {} without activation. Run shellswitch switch {} --yes, then keep after checking the desktop",
+                c.name, c.id
+            );
+            return Ok(());
+        }
         Some(Action::Watchdog) => return control::watchdog(&dir),
         Some(Action::Supervise { argv, ticket }) => {
             return process::supervise(argv, ticket.as_deref());
@@ -316,9 +350,22 @@ fn main() -> Result<()> {
             println!("Managed shell stopped");
             return Ok(());
         }
-        Some(Action::Status) => {
+        Some(Action::Status { human }) => {
             let store = control::Store::open(&dir)?;
-            println!("{}", serde_json::to_string_pretty(&store.load()?)?);
+            let state = store.load()?;
+            println!(
+                "{}",
+                if *human {
+                    experience::summary(&state)
+                } else {
+                    serde_json::to_string_pretty(&state)?
+                }
+            );
+            return Ok(());
+        }
+        Some(Action::Guide) => {
+            let state = control::Store::open(&dir)?.load()?;
+            println!("{}", experience::guide(&state));
             return Ok(());
         }
         Some(Action::Template) => {
@@ -467,9 +514,16 @@ fn main() -> Result<()> {
                 c.evidence.join("\n")
             );
         }
-        Action::Switch { id, yes } => {
+        Action::Switch { id, yes, refresh } => {
             confirmed(yes)?;
-            control::switch(&dir, find(&id)?, &report.session, &report.candidates)?;
+            let updated;
+            let candidate = if refresh {
+                updated = lifecycle::refresh(&dir, &id, None)?;
+                &updated
+            } else {
+                find(&id)?
+            };
+            control::switch(&dir, candidate, &report.session, &report.candidates)?;
             println!(
                 "Trial started. Run shellswitch keep within 20 seconds, or shellswitch revert. State: {}",
                 dir.display()
@@ -488,6 +542,15 @@ fn main() -> Result<()> {
             }
             control::adopt(&dir, c, None)?;
             println!("User service adopted");
+        }
+        Action::Update { id, yes } => {
+            confirmed(yes)?;
+            let selected = control::Store::open(&dir)?.load()?.selected;
+            let id = id.or(selected).context("No selected shell; choose a shell explicitly with shellswitch update SHELL_ID --yes")?;
+            experience::update(&dir, &id, &report.session, &report.candidates)?;
+            println!(
+                "Update trial started. Check your desktop, then run shellswitch keep within 20 seconds; shellswitch revert restores the previous revision."
+            );
         }
         Action::Tui => ui::run(report, roots, dir)?,
         Action::Render { svg } => print!(

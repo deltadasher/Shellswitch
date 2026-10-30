@@ -13,7 +13,12 @@ fn call(root: &Path, state: &Path, args: &[&str]) -> Output {
         .arg(state)
         .args(args)
         .env("WAYLAND_DISPLAY", "shellswitch-test-no-display")
+        .env("XDG_CONFIG_HOME", state.join("config"))
+        .env("XDG_STATE_HOME", state.join("xdg-state"))
         .env("XDG_CURRENT_DESKTOP", "testwm")
+        .env_remove("NIRI_SOCKET")
+        .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+        .env_remove("SWAYSOCK")
         .output()
         .unwrap()
 }
@@ -36,7 +41,9 @@ fn fixture(root: &Path, name: &str, argv: &str) {
     fs::create_dir(&dir).unwrap();
     fs::write(
         dir.join("shellswitch.toml"),
-        format!("name={name:?}\nargv={argv}\nprotocols=['wayland']\n"),
+        format!(
+            "name={name:?}\nargv={argv}\nprotocols=['wayland']\n[lifecycle]\nadapter='fixture'\n"
+        ),
     )
     .unwrap();
 }
@@ -170,7 +177,7 @@ esac
         fs::create_dir(&p).unwrap();
         fs::write(
             p.join("shellswitch.toml"),
-            format!("name={name:?}\nsystemd_unit='{name}.service'\nprotocols=['wayland']\n"),
+            format!("name={name:?}\nsystemd_unit='{name}.service'\nprotocols=['wayland']\n[lifecycle]\nadapter='fixture'\n"),
         )
         .unwrap();
     }
@@ -183,6 +190,12 @@ esac
             .args(args)
             .env("WAYLAND_DISPLAY", "test-display")
             .env("MOCK_DIR", t.path())
+            .env("XDG_CONFIG_HOME", journal.join("config"))
+            .env("XDG_STATE_HOME", journal.join("xdg-state"))
+            .env("XDG_CURRENT_DESKTOP", "testwm")
+            .env_remove("NIRI_SOCKET")
+            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+            .env_remove("SWAYSOCK")
             .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
             .output()
             .unwrap();
@@ -202,4 +215,55 @@ esac
     assert!(t.path().join("alpha-service.service").exists());
     assert!(!t.path().join("beta-service.service").exists());
     invoke(&["stop", "--yes"]);
+}
+
+#[test]
+fn update_trials_local_changes_and_revert_restores_previous_revision() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("shells");
+    let journal = t.path().join("state");
+    let source = root.join("editable");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("run.sh"), "exec /usr/bin/sleep 311\n").unwrap();
+    let manifest = root.join("shellswitch.toml");
+    fs::write(
+        &manifest,
+        format!(
+            "id='editable'\nname='Editable'\nargv=['/bin/sh',{:?}]\nprotocols=['wayland']\n",
+            source.join("run.sh")
+        ),
+    )
+    .unwrap();
+    ok(
+        &root,
+        &journal,
+        &[
+            "install",
+            manifest.to_str().unwrap(),
+            "--payload",
+            source.to_str().unwrap(),
+            "--yes",
+        ],
+    );
+    ok(&root, &journal, &["switch", "editable", "--yes"]);
+    ok(&root, &journal, &["keep"]);
+    let old = state(&root, &journal);
+    fs::write(source.join("run.sh"), "exec /usr/bin/sleep 312\n").unwrap();
+    ok(&root, &journal, &["update", "--yes"]);
+    let trial = state(&root, &journal);
+    assert!(!trial["pending"].is_null());
+    assert_ne!(
+        trial["pending"]["target"]["source"],
+        old["active"]["candidate"]["source"]
+    );
+    assert_eq!(
+        trial["pending"]["previous"]["candidate"]["source"],
+        old["active"]["candidate"]["source"]
+    );
+    ok(&root, &journal, &["revert"]);
+    assert_eq!(
+        state(&root, &journal)["active"]["candidate"]["source"],
+        old["active"]["candidate"]["source"]
+    );
+    ok(&root, &journal, &["stop", "--yes"]);
 }

@@ -1,7 +1,7 @@
 use crate::{
     control::{self, State},
     discovery::{self, Report},
-    lifecycle,
+    experience, lifecycle,
     model::Kind,
 };
 use anyhow::Result;
@@ -27,6 +27,7 @@ struct App {
     message: String,
     confirm: Option<String>,
     diagnostic: bool,
+    review_scroll: u16,
     profile_compositor: String,
 }
 impl Default for App {
@@ -37,9 +38,10 @@ impl Default for App {
             tab: 0,
             selected: 0,
             scroll: 0,
-            message: "Discovery is read-only. Enter previews the exact switch plan.".into(),
+            message: "Enter reviews a switch. Shift+U updates local source. ? explains setup and recovery.".into(),
             confirm: None,
             diagnostic: false,
+            review_scroll: 0,
             profile_compositor: String::new(),
         }
     }
@@ -107,7 +109,7 @@ fn draw(f: &mut Frame, report: &Report, a: &App, state: &State) {
             )),
             Span::styled(
                 format!(
-                    "    selected: {} · running: {active}",
+                    "    selected: {} · recorded: {active}",
                     state.selected.as_deref().unwrap_or("none")
                 ),
                 Style::default().fg(GOLD),
@@ -230,6 +232,14 @@ fn draw(f: &mut Frame, report: &Report, a: &App, state: &State) {
     } else {
         "No matches. Clear your search, change collection, or add --root /path/to/shells.".into()
     };
+    if let Some(i) = visible.get(a.selected) {
+        let candidate = &report.candidates[*i];
+        if let Some(active) = &state.active
+            && active.candidate.id == candidate.id
+        {
+            detail = format!("{}\n\n{}", experience::summary(state), detail);
+        }
+    }
     if a.tab == 5 {
         let saved = state
             .autostart
@@ -264,7 +274,7 @@ fn draw(f: &mut Frame, report: &Report, a: &App, state: &State) {
     } else {
         a.message.clone()
     };
-    f.render_widget(Paragraph::new(vec![Line::from(Span::styled(terminal_text(&status),Style::default().fg(GOLD))),Line::from(Span::styled("↑↓ select  Tab group  / search  Enter plan  x disable  l release  d doctor  f repair  e recover  r scan  Ctrl+L redraw  q quit",Style::default().fg(MUTED)))]).wrap(Wrap{trim:true}).block(block(" CONTROL ")),vertical[3]);
+    f.render_widget(Paragraph::new(vec![Line::from(Span::styled(terminal_text(&status),Style::default().fg(GOLD))),Line::from(Span::styled("↑↓ select  Tab group  / search  Enter switch plan  Shift+U update  ? help  d doctor  r scan  q quit",Style::default().fg(MUTED)))]).wrap(Wrap{trim:true}).block(block(" CONTROL ")),vertical[3]);
     if let Some(text) = &a.confirm {
         let area = Rect::new(
             f.area().x + 5,
@@ -273,20 +283,26 @@ fn draw(f: &mut Frame, report: &Report, a: &App, state: &State) {
             f.area().height.saturating_sub(6),
         );
         f.render_widget(Clear, area);
+        let frame = block(" REVIEW ACTION ").border_style(Style::default().fg(GOLD));
+        let inner = frame.inner(area);
+        f.render_widget(frame.style(Style::default().bg(BG)), area);
+        let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(inner);
         f.render_widget(
-            Paragraph::new(format!(
-                "{}\n\n{}",
-                terminal_text(text),
-                if a.diagnostic {
-                    "[Esc] Close    [Ctrl+L] Redraw"
-                } else {
-                    "[y] Confirm    [Esc] Cancel"
-                }
-            ))
-            .wrap(Wrap { trim: false })
-            .block(block(" REVIEW ACTION ").border_style(Style::default().fg(GOLD)))
-            .style(Style::default().bg(BG)),
-            area,
+            Paragraph::new(terminal_text(text))
+                .wrap(Wrap { trim: false })
+                .scroll((a.review_scroll, 0)),
+            parts[0],
+        );
+        let actions = if a.diagnostic {
+            "Esc close · PgUp/PgDn scroll"
+        } else {
+            "y confirm · Esc cancel · PgUp/PgDn scroll"
+        };
+        f.render_widget(
+            Paragraph::new(actions)
+                .style(Style::default().fg(GOLD))
+                .wrap(Wrap { trim: true }),
+            parts[1],
         );
     }
 }
@@ -349,6 +365,11 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
         profile_compositor: report.session.compositor.clone(),
         ..App::default()
     };
+    let initial = control::Store::open(&dir)?.load()?;
+    if initial.selected.is_none() && initial.active.is_none() && initial.pending.is_none() {
+        a.confirm = Some(experience::guide(&initial));
+        a.diagnostic = true;
+    }
     let mut pending_action = 's';
     let automatic_roots = roots.iter().any(|p| p == &discovery::config_home());
     let mut last_scan = std::time::Instant::now();
@@ -404,18 +425,34 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
         let visible = filtered(&report, &a);
         let selected = visible.get(a.selected).copied();
         if a.confirm.is_some() {
+            if key.code == KeyCode::PageDown {
+                a.review_scroll = a.review_scroll.saturating_add(6);
+                continue;
+            }
+            if key.code == KeyCode::PageUp {
+                a.review_scroll = a.review_scroll.saturating_sub(6);
+                continue;
+            }
             if key.code == KeyCode::Esc {
                 a.confirm = None;
+                a.review_scroll = 0;
                 a.diagnostic = false;
                 terminal.clear()?;
                 continue;
             }
             if key.code == KeyCode::Char('y') && !a.diagnostic {
                 a.confirm = None;
+                a.review_scroll = 0;
                 let result = match (pending_action, selected) {
                     ('s', Some(i)) => control::switch(
                         &dir,
                         &report.candidates[i],
+                        &report.session,
+                        &report.candidates,
+                    ),
+                    ('U', Some(i)) => experience::update(
+                        &dir,
+                        &report.candidates[i].id,
                         &report.session,
                         &report.candidates,
                     ),
@@ -576,6 +613,37 @@ pub fn run(mut report: Report, roots: Vec<PathBuf>, dir: PathBuf) -> Result<()> 
                             a.diagnostic = true;
                         }
                     };
+                }
+            }
+            KeyCode::Char('?') => {
+                a.diagnostic = true;
+                a.confirm = Some(experience::guide(&state));
+            }
+            KeyCode::Char('U') => {
+                if let Some(i) = selected {
+                    let candidate = &report.candidates[i];
+                    match state
+                        .installed
+                        .get(&candidate.id)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Register a reviewed manifest before updating this shell"
+                            )
+                        })
+                        .and_then(|c| control::update_plan(c, &report.session, &state))
+                    {
+                        Ok(plan) => {
+                            pending_action = 'U';
+                            a.confirm = Some(format!(
+                                "Update {} from its remembered local source?\nFiles will be staged, then a 20-second trial begins. No Git fetch or build runs.\n\n{}",
+                                candidate.name, plan
+                            ));
+                        }
+                        Err(error) => {
+                            a.diagnostic = true;
+                            a.confirm = Some(format!("Cannot update: {error:#}"));
+                        }
+                    }
                 }
             }
             KeyCode::Char('a') => {
@@ -750,6 +818,53 @@ mod tests {
                 .unwrap();
             for cell in &terminal.backend().buffer().content {
                 assert!(!cell.symbol().contains('\x1b'));
+            }
+        }
+    }
+    #[test]
+    fn help_keeps_navigation_visible_at_supported_sizes() {
+        let report = Report {
+            session: crate::model::Session {
+                protocol: "wayland".into(),
+                compositor: "testwm".into(),
+                globals: None,
+                evidence: vec![],
+            },
+            candidates: vec![],
+            warnings: vec![],
+            files_visited: 0,
+        };
+        for (width, height) in [(76, 20), (120, 36)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut app = App {
+                confirm: Some(experience::guide(&State::default())),
+                diagnostic: true,
+                ..App::default()
+            };
+            for scroll in [0, 6] {
+                app.review_scroll = scroll;
+                terminal
+                    .draw(|f| draw(f, &report, &app, &State::default()))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let text = (0..height)
+                    .map(|y| {
+                        (0..width)
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(text.contains("Esc close") && text.contains("PgUp/PgDn"));
+                if scroll == 0 {
+                    assert!(text.contains("NEXT STEP"));
+                }
+                if width == 120
+                    && scroll == 0
+                    && let Ok(path) = std::env::var("SHELLSWITCH_HELP_CAPTURE")
+                {
+                    std::fs::write(path, text).unwrap();
+                }
             }
         }
     }

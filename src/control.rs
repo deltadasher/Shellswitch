@@ -457,6 +457,10 @@ pub(crate) fn check_config(s: &State) -> Result<()> {
 pub fn plan(c: &Candidate, session: &Session, s: &State) -> Result<String> {
     plan_mode(c, session, s, false)
 }
+/// Update preflight permits the same active revision; all other guards remain.
+pub fn update_plan(c: &Candidate, session: &Session, s: &State) -> Result<String> {
+    plan_mode(c, session, s, true)
+}
 fn plan_mode(c: &Candidate, session: &Session, s: &State, restart: bool) -> Result<String> {
     session.compatibility(c).map_err(anyhow::Error::msg)?;
     guarded(c)?;
