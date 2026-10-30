@@ -1,4 +1,4 @@
-# Shellswitch 0.2.13
+# Shellswitch 0.2.15
 
 Rust desktop-shell discovery and transactional lifecycle control, with a three-pane Ratatui interface inspired by Linutil. This version adds configuration ownership, inactive-shell gates, staged installs, rollback, and incident-specific Tonantzintla/Serpantinum bridges.
 
@@ -26,6 +26,35 @@ shellswitch inventory
 
 **Development did not change the live desktop.** The included binary and Tonantzintla patch are tested deliverables, not an assertion that the installed desktop is already protected. Discovery runs a fresh bounded scan each time you open Shellswitch or run `scan`; it is not a one-time database. First review the startup inventory and integration gaps below.
 
+## Everyday use
+
+Open `shellswitch` to browse. First-time users get a scrollable guide; press
+**Esc** to browse, **?** to reopen help, and **PgUp/PgDn** to scroll long reviews.
+
+- **Enter** reviews the selected shell's switch plan; **y** begins its trial.
+- **k** keeps a working trial; **u** restores the previous shell.
+- **Shift+U** reviews an update from the highlighted shell's remembered source.
+- **Tab → Autostart** chooses the login shell separately for each compositor.
+- **d** diagnoses problems. Destructive and recovery actions still require review.
+
+```sh
+shellswitch guide
+shellswitch status --human
+shellswitch update --yes          # selected shell, using its local source
+shellswitch keep                 # after checking the update, within 20 seconds
+```
+
+`update SHELL_ID --yes` targets another registered shell explicitly. Updates
+stage a fresh revision and use the existing rollback trial. They do not fetch
+Git changes, build projects, install dependencies, or automatically accept trials.
+Legacy registrations need a reviewed source binding first; the guide explains
+this instead of guessing a checkout. An already staged revision can be activated
+with `switch SHELL_ID --yes` without another refresh.
+
+Human-readable status distinguishes recorded active files from staged files and
+checks process identity where available. Matching revision paths do not prove
+that files were never modified. Plain `status` retains its JSON output for scripts.
+
 ## Transaction and ownership
 
 One persistent `selected` shell and one user-level flock serialize mutations. State defaults to `$XDG_STATE_HOME/shellswitch` (`~/.local/state/shellswitch`). All commands and hooks must use this same ownership domain. Do not create separate active state directories for the same desktop.
@@ -45,6 +74,38 @@ shellswitch recover --yes     # interrupted operation; safe to repeat
 Process survival and successful validation do not prove visual usability. Inspect the desktop before keeping the trial. Niri live reload requires `load-config-file --path` and `ConfigLoaded` event support (tested against the 26.04 interface using a fixture). `enroll --offline` is for fixtures/offline validation, not a verified live handoff.
 
 ## Install separately; preserve personal settings
+
+### Editable sources and staged runtimes
+
+Payload installs now remember their source manifest and payload directory. Edit
+the source, not a generated `packages/.../payload` copy. To stage and trial the
+latest source in one command:
+
+```sh
+shellswitch switch tonantzintla --refresh --yes
+shellswitch keep  # within 20 seconds, after checking the desktop
+```
+
+For staging without activation, use `shellswitch refresh SHELL_ID --yes`.
+`refresh SHELL_ID --payload /path/to/checkout --yes` rebinds future refreshes
+to a different editable source while preserving the manifest's original runtime
+path mapping. The checkout must have the same runtime layout; missing launch
+paths fail staging. Manifest changes are reread and identity changes rejected.
+No installer, build command, or dependency download is executed automatically.
+
+Older registrations have no source provenance. Prefer generating/reviewing a
+fresh adapter against the intended checkout and installing it with `--payload`
+pointing at that checkout. Alternatively, refresh once with `--payload` pointing
+at the **original runtime root named in the manifest**, then rebind to a checkout.
+Do not guess a source by project name or point it at a different layout.
+
+The same refresh mechanism applies to Serpantinum and arbitrary registered
+shells. Detection alone does not imply a safe lifecycle adapter. Refresh never
+clears a hold, activates a shell, modifies Niri, or updates the recorded running
+revision. Old packages remain available for rollback. There is deliberately no
+background hot-reload of source edits: explicit refresh keeps partial edits from
+replacing the desktop unexpectedly. Use the existing native lease contract or
+reviewed bridges for ownership handoff; source refresh does not bypass gates.
 
 `install` copies a payload into a versioned package directory and records its manifest. It never starts the shell, rewrites Niri, replaces command gates, clears a hold, or selects the new revision. It is not a dependency package manager. Use `--payload` for pinned runtime code; without it only metadata/configuration is captured and referenced code remains mutable.
 

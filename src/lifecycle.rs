@@ -6,7 +6,7 @@ use crate::{
     process,
 };
 use anyhow::{Context, Result, bail, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
@@ -25,6 +25,56 @@ pub fn registry(dir: &Path) -> Result<Vec<Candidate>> {
 }
 
 pub fn install(dir: &Path, manifest: &Path, payload: Option<&Path>) -> Result<Candidate> {
+    install_from(dir, manifest, payload, payload, None)
+}
+
+#[derive(Serialize, Deserialize)]
+struct SourceRecipe {
+    manifest: PathBuf,
+    payload: Option<PathBuf>,
+    runtime_root: Option<PathBuf>,
+}
+
+/// Refresh registered code, never the active process or configuration. Legacy
+/// registrations require an explicit payload instead of guessing a checkout.
+pub fn refresh(dir: &Path, id: &str, payload: Option<&Path>) -> Result<Candidate> {
+    let candidate = registry(dir)?
+        .into_iter()
+        .find(|c| c.id == id)
+        .with_context(|| {
+            format!("Shell {id} is not registered; install a reviewed manifest first")
+        })?;
+    let recipe_path = candidate.source.with_file_name("source.json");
+    let recipe: SourceRecipe = if recipe_path.exists() {
+        serde_json::from_slice(&fs::read(&recipe_path)?)?
+    } else {
+        ensure!(
+            payload.is_some(),
+            "Legacy registration has no source provenance; refresh {id} --payload ORIGINAL_RUNTIME_ROOT --yes once, or install a new adapter against your checkout"
+        );
+        SourceRecipe {
+            manifest: candidate.source.clone(),
+            payload: payload.map(Path::to_path_buf),
+            runtime_root: payload.map(Path::to_path_buf),
+        }
+    };
+    let root = payload.or(recipe.payload.as_deref());
+    install_from(
+        dir,
+        &recipe.manifest,
+        root,
+        recipe.runtime_root.as_deref(),
+        Some(id),
+    )
+}
+
+fn install_from(
+    dir: &Path,
+    manifest: &Path,
+    payload: Option<&Path>,
+    runtime_root: Option<&Path>,
+    expected_id: Option<&str>,
+) -> Result<Candidate> {
     let store = Store::open(dir)?;
     store.mutation_ready()?;
     let mut s = store.load()?;
@@ -34,6 +84,15 @@ pub fn install(dir: &Path, manifest: &Path, payload: Option<&Path>) -> Result<Ca
     );
     let source = fs::canonicalize(manifest)?;
     let mut c = crate::discovery::manifest(&source)?;
+    ensure!(
+        expected_id.is_none_or(|id| id == c.id),
+        "Source manifest changed shell identity; review and install it explicitly"
+    );
+    let recipe = SourceRecipe {
+        manifest: source.clone(),
+        payload: payload.map(fs::canonicalize).transpose()?,
+        runtime_root: runtime_root.map(ownership::absolute).transpose()?,
+    };
     let version = store
         .dir
         .join("packages")
@@ -51,7 +110,7 @@ pub fn install(dir: &Path, manifest: &Path, payload: Option<&Path>) -> Result<Ca
         copy_tree(&root, &dest, &root, &mut count)?;
         let map = |value: &str| -> String {
             let p = Path::new(value);
-            p.strip_prefix(&root)
+            p.strip_prefix(recipe.runtime_root.as_deref().unwrap_or(&root))
                 .ok()
                 .map(|rel| dest.join(rel).to_string_lossy().into_owned())
                 .unwrap_or_else(|| value.into())
@@ -59,6 +118,12 @@ pub fn install(dir: &Path, manifest: &Path, payload: Option<&Path>) -> Result<Ca
         if let Backend::Process { argv, cwd } = &mut c.backend {
             for a in argv {
                 *a = map(a);
+                if Path::new(a).starts_with(&dest) {
+                    ensure!(
+                        Path::new(a).exists(),
+                        "Refreshed payload is missing runtime path: {a}"
+                    );
+                }
             }
             *cwd = PathBuf::from(map(&cwd.to_string_lossy()));
         }
@@ -101,6 +166,10 @@ pub fn install(dir: &Path, manifest: &Path, payload: Option<&Path>) -> Result<Ca
         &ownership::read(&source)?,
     )?;
     c.source = version.join("shellswitch.toml");
+    fs::write(
+        version.join("source.json"),
+        serde_json::to_vec_pretty(&recipe)?,
+    )?;
     // Installing never executes upstream installers, rewrites shared config,
     // replaces public launchers, enables services, or changes selected state.
     let replaced_ids: Vec<String> = s
@@ -126,14 +195,8 @@ pub fn install(dir: &Path, manifest: &Path, payload: Option<&Path>) -> Result<Ca
         }
     }
     s.installed.insert(c.id.clone(), c.clone());
-    // If this revision is already the active process, refresh its candidate
-    // metadata in place. Otherwise the registry would gain an adapter while
-    // the running state continued to carry the unmanaged pre-install copy.
-    if let Some(active) = &mut s.active
-        && active.candidate.id == c.id
-    {
-        active.candidate = c.clone();
-    }
+    // The active candidate describes the process actually running, and is also
+    // the rollback target. Staging must never relabel it as the new revision.
     s.last_event = format!(
         "Staged {}. Selection and live configuration were not changed",
         c.name
