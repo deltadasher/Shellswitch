@@ -3,7 +3,7 @@
 Rust desktop-shell discovery and transactional lifecycle control, with a three-pane Ratatui interface inspired by Linutil.
 ## Install the command
 
-Download and extract the Linux x86_64 archive from the [0.2.5 release](https://github.com/deltadasher/Shellswitch/releases/tag/v0.2.5), then run:
+Download and extract the Linux x86_64 archive from the [latest release](https://github.com/deltadasher/Shellswitch/releases/latest), then run:
 
 ```sh
 ./install.sh
@@ -212,6 +212,13 @@ Limits: depth 12, 30,000 files; text metadata up to 512 KiB; shell component agg
 cargo build --release --locked
 cargo test --locked -- --test-threads=1
 cargo clippy --all-targets -- -D warnings
+```
+
+To prepare a public Linux archive, check out the commit or tag to distribute and run the following commands from the repository root. The packager builds the committed tree with its lockfile, remaps local source paths in the executable and writes numeric root ownership into the tar headers. Choose a separate output directory for each release so its checksum file stays with its archive. Generate public previews with `shellswitch --isolated --root <example-directory> render --svg` from a neutral path containing only example manifests. The preview displays the scan path.
+
+```sh
+scripts/package-release.sh dist/release
+(cd dist/release && sha256sum --check SHA256SUMS)
 ```
 
 See [verification](docs/VERIFICATION.md), [incident analysis](docs/INCIDENT-AND-DESIGN.md), and [handoff contract](docs/HANDOFF.md). Linux process tests use disposable processes and temporary HOME/XDG directories. Real Niri validates fixtures; live reload and user-service behavior use fake endpoints. Actual graphical switching and host service operation are not verified in the sandbox.
